@@ -299,6 +299,7 @@ async function getWorkflowPages() {
       id: page.id,
       properties: page.properties,
       date: page.properties.Date?.date?.start ? new Date(page.properties.Date.date.start) : null,
+      icon: page.icon, // Include icon information for copying
     }));
   } catch (error) {
     console.error('Error getting workflow pages:', error);
