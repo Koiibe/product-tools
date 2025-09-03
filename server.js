@@ -43,28 +43,45 @@ app.post('/webhook/notion', async (req, res) => {
 
     // Extract epic ID from webhook payload - try multiple formats
     // Notion buttons can send data in various formats
-    let epicId = req.body.epicId || 
-                 req.body.page?.id || 
-                 req.body.pageId ||
-                 req.body.id ||
-                 req.body.data?.id;  // Notion automation sends page ID here
-    
-    // If no direct ID, check if it's in the properties or context
-    if (!epicId && req.body.context?.pageId) {
-      epicId = req.body.context.pageId;
+    let epicId = req.body.epicId;
+
+    // FIRST: Check if the triggering page has an epic relation in its properties
+    if (!epicId && req.body.data?.properties) {
+      const epicProps = req.body.data.properties;
+
+      // Check for common epic relation property names
+      const epicRelation = epicProps['Epic'] ||
+                          epicProps['Parent Epic'] ||
+                          epicProps['📚 Epics All Teams'] ||
+                          epicProps['Related Epic'];
+
+      if (epicRelation?.relation?.[0]?.id) {
+        epicId = epicRelation.relation[0].id;
+        console.log('🎯 Found epic ID in relation property:', epicId);
+      } else if (epicRelation?.rollup?.[0]?.relation?.[0]?.id) {
+        epicId = epicRelation.rollup[0].relation[0].id;
+        console.log('🎯 Found epic ID in rollup relation:', epicId);
+      }
     }
-    
-    // Check for page ID in automation context
-    if (!epicId && req.body.automationContext?.pageId) {
-      epicId = req.body.automationContext.pageId;
-    }
-    
-    // Check headers for epic ID (in case it's sent there)
+
+    // SECOND: Check headers for epic ID (in case it's sent there)
     if (!epicId && req.headers.epicid && req.headers.epicid !== '{{page.id}}') {
       epicId = req.headers.epicid;
+      console.log('🎯 Found epic ID in headers:', epicId);
     }
-    
-    console.log('Extracted epicId:', epicId);
+
+    // THIRD: Fallback to the triggering page ID (current page)
+    if (!epicId) {
+      epicId = req.body.data?.id ||  // Notion automation sends page ID here
+               req.body.page?.id ||
+               req.body.pageId ||
+               req.body.id ||
+               req.body.context?.pageId ||
+               req.body.automationContext?.pageId;
+      console.log('📄 Using triggering page ID as epic ID:', epicId);
+    }
+
+    console.log('🎯 Final extracted epicId:', epicId);
     
     if (!epicId) {
       console.log('No epic ID found in payload');
