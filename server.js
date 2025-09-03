@@ -41,40 +41,59 @@ app.post('/webhook/notion', async (req, res) => {
     console.log('Received webhook:', JSON.stringify(req.body, null, 2));
     console.log('Headers:', JSON.stringify(req.headers, null, 2));
 
-    // Extract epic ID and fulfill by date from webhook payload - try multiple formats
+    // Extract epic ID, target date, and workflow type from webhook payload - try multiple formats
     // Notion buttons can send data in various formats
     let epicId = req.body.epicId;
-    let webhookFulfillBy = req.body.fulfillBy;
+    let webhookTargetDate = req.body.targetDate || req.body.fulfillBy;
+    let workflowType = req.body.workflow;
 
-    // FIRST: Check if the triggering page has an epic relation and fulfill by date in its properties
+    // FIRST: Check if the triggering page has epic relation, workflow type, and target date in its properties
     if (!epicId && req.body.data?.properties) {
-      const epicProps = req.body.data.properties;
+      const generatorProps = req.body.data.properties;
 
-      // Check for common epic relation property names
-      const epicRelation = epicProps['Epic'] ||
-                          epicProps['Parent Epic'] ||
-                          epicProps['📚 Epics All Teams'] ||
-                          epicProps['Related Epic'];
+      // Check for "Assign to Epic" relation property
+      const epicRelation = generatorProps['Assign to Epic'] ||
+                          generatorProps['Epic'] ||
+                          generatorProps['Parent Epic'] ||
+                          generatorProps['📚 Epics All Teams'] ||
+                          generatorProps['Related Epic'];
 
       if (epicRelation?.relation?.[0]?.id) {
         epicId = epicRelation.relation[0].id;
-        console.log('🎯 Found epic ID in relation property:', epicId);
+        console.log('🎯 Found epic ID in Assign to Epic relation:', epicId);
       } else if (epicRelation?.rollup?.[0]?.relation?.[0]?.id) {
         epicId = epicRelation.rollup[0].relation[0].id;
         console.log('🎯 Found epic ID in rollup relation:', epicId);
       }
 
-      // Extract fulfill by date from triggering page properties if not in webhook
-      if (!webhookFulfillBy) {
-        const fulfillByProp = epicProps['Fulfill By'] ||
-                             epicProps['Fulfill by'] ||
-                             epicProps['Due Date'] ||
-                             epicProps['Due'] ||
-                             epicProps['Deadline'];
+      // Extract target date from triggering page properties if not in webhook
+      if (!webhookTargetDate) {
+        const targetDateProp = generatorProps['Target date'] ||
+                              generatorProps['Target Date'] ||
+                              generatorProps['Fulfill By'] ||
+                              generatorProps['Fulfill by'] ||
+                              generatorProps['Due Date'] ||
+                              generatorProps['Due'] ||
+                              generatorProps['Deadline'];
 
-        if (fulfillByProp?.date?.start) {
-          webhookFulfillBy = fulfillByProp.date.start;
-          console.log('📅 Found fulfill by date in triggering page properties:', webhookFulfillBy);
+        if (targetDateProp?.date?.start) {
+          webhookTargetDate = targetDateProp.date.start;
+          console.log('📅 Found target date in triggering page properties:', webhookTargetDate);
+        }
+      }
+
+      // Extract workflow type from triggering page properties if not in webhook
+      if (!workflowType) {
+        const workflowProp = generatorProps['Workflow'] ||
+                            generatorProps['Workflow Type'] ||
+                            generatorProps['Type'];
+
+        if (workflowProp?.relation?.[0]?.id) {
+          workflowType = workflowProp.relation[0].id;
+          console.log('🔄 Found workflow type in relation:', workflowType);
+        } else if (workflowProp?.select?.name) {
+          workflowType = workflowProp.select.name;
+          console.log('🔄 Found workflow type in select:', workflowType);
         }
       }
     }
@@ -97,19 +116,20 @@ app.post('/webhook/notion', async (req, res) => {
     }
 
     console.log('🎯 Final extracted epicId:', epicId);
-    console.log('📅 Webhook fulfill by date:', webhookFulfillBy);
+    console.log('📅 Webhook target date:', webhookTargetDate);
+    console.log('🔄 Workflow type:', workflowType);
 
     if (!epicId) {
       console.log('No epic ID found in payload');
       return res.status(400).json({
-        error: 'No epic ID provided in webhook. Please ensure the button passes the page ID.',
+        error: 'No epic ID provided in webhook. Please ensure the "Assign to Epic" property is set.',
         receivedPayload: req.body,
-        suggestion: 'Add a custom property with key "epicId" and value "{{page.id}}" to the webhook configuration'
+        suggestion: 'Set the "Assign to Epic" relation property to the target epic'
       });
     }
 
-    // Process the workflow copying with the webhook fulfill by date
-    await processWorkflowCopy(epicId, webhookFulfillBy);
+    // Process the workflow copying with target date and workflow type
+    await processWorkflowCopy(epicId, webhookTargetDate, workflowType);
 
     res.status(200).json({ message: 'Workflow processing completed successfully' });
   } catch (error) {
@@ -164,7 +184,7 @@ app.get('/test-epic/:epicId', async (req, res) => {
 });
 
 // Main processing function
-async function processWorkflowCopy(epicId, webhookFulfillBy = null) {
+async function processWorkflowCopy(epicId, webhookTargetDate = null, workflowType = null) {
   try {
     console.log(`Processing workflow copy for epic: ${epicId}`);
     addDebugMessage(`Starting workflow copy for epic: ${epicId}`);
@@ -175,26 +195,26 @@ async function processWorkflowCopy(epicId, webhookFulfillBy = null) {
     console.log('Epic details:', epicDetails);
     addDebugMessage(`Epic details retrieved: ${JSON.stringify(epicDetails)}`);
 
-    // Use webhook fulfill by date if epic doesn't have one
-    let effectiveFulfillBy = epicDetails.fulfillBy;
-    if (!effectiveFulfillBy && webhookFulfillBy) {
-      effectiveFulfillBy = new Date(webhookFulfillBy);
-      console.log('📅 Using webhook fulfill by date:', effectiveFulfillBy);
-      addDebugMessage(`Using webhook fulfill by date: ${effectiveFulfillBy}`);
-    } else if (effectiveFulfillBy) {
-      console.log('📅 Using epic fulfill by date:', effectiveFulfillBy);
-      addDebugMessage(`Using epic fulfill by date: ${effectiveFulfillBy}`);
+    // Use webhook target date if epic doesn't have one
+    let effectiveTargetDate = epicDetails.fulfillBy; // Note: keeping fulfillBy for now, will update epic property extraction later
+    if (!effectiveTargetDate && webhookTargetDate) {
+      effectiveTargetDate = new Date(webhookTargetDate);
+      console.log('📅 Using webhook target date:', effectiveTargetDate);
+      addDebugMessage(`Using webhook target date: ${effectiveTargetDate}`);
+    } else if (effectiveTargetDate) {
+      console.log('📅 Using epic target date:', effectiveTargetDate);
+      addDebugMessage(`Using epic target date: ${effectiveTargetDate}`);
     } else {
-      console.log('⚠️ No fulfill by date found - dates will not be translated');
-      addDebugMessage('No fulfill by date found - dates will not be translated');
+      console.log('⚠️ No target date found - dates will not be translated');
+      addDebugMessage('No target date found - dates will not be translated');
     }
 
-    // Step 2: Get all pages from Product Workflows database
-    const workflowPages = await getWorkflowPages();
-    console.log(`Found ${workflowPages.length} workflow pages`);
+    // Step 2: Get workflow pages filtered by workflow type
+    const workflowPages = await getWorkflowPages(workflowType);
+    console.log(`Found ${workflowPages.length} workflow pages${workflowType ? ` for workflow type: ${workflowType}` : ''}`);
 
     // Step 3: Calculate date translation
-    const dateTranslation = calculateDateTranslation(workflowPages, effectiveFulfillBy);
+    const dateTranslation = calculateDateTranslation(workflowPages, effectiveTargetDate);
 
     // Step 4: Copy pages to Stories database
     const copiedPages = await copyPagesToStories(workflowPages, epicDetails, dateTranslation);
@@ -214,30 +234,31 @@ async function getEpicDetails(epicId) {
     const response = await notion.pages.retrieve({ page_id: epicId });
     console.log('Epic response received:', JSON.stringify(response.properties, null, 2));
 
-    // Get the fulfill by property - try multiple property names
+    // Get the target date property - try multiple property names
     let fulfillBy = null;
-    const fulfillByCandidates = [
-      'Fulfill By',      // Exact match
-      'Fulfill by',      // Different casing
+    const targetDateCandidates = [
+      'Target date',     // New primary name
+      'Target Date',     // Alternative casing
+      'Fulfill By',      // Legacy name
+      'Fulfill by',      // Legacy different casing
       'Due Date',        // Alternative name
       'Due',             // Short form
       'Deadline',        // Alternative name
-      'Target Date',     // Alternative name
       'End Date',        // Alternative name
       'Completion Date'  // Alternative name
     ];
 
-    for (const propName of fulfillByCandidates) {
+    for (const propName of targetDateCandidates) {
       const prop = response.properties[propName];
       if (prop?.date?.start) {
         fulfillBy = new Date(prop.date.start);
-        console.log(`📅 Found fulfill by date from ${propName}: ${fulfillBy}`);
+        console.log(`📅 Found target date from ${propName}: ${fulfillBy}`);
         break; // Use the first one found
       }
     }
 
     if (!fulfillBy) {
-      console.log('⚠️ No fulfill by date property found. Available properties:', Object.keys(response.properties));
+      console.log('⚠️ No target date property found. Available properties:', Object.keys(response.properties));
     }
 
     // Try different property names for the epic name
@@ -283,9 +304,9 @@ async function getEpicDetails(epicId) {
 }
 
 // Get all pages from Product Workflows database
-async function getWorkflowPages() {
+async function getWorkflowPages(workflowType = null) {
   try {
-    const response = await notion.databases.query({
+    const queryParams = {
       database_id: PRODUCT_WORKFLOWS_DB_ID,
       sorts: [
         {
@@ -293,7 +314,20 @@ async function getWorkflowPages() {
           direction: 'ascending',
         },
       ],
-    });
+    };
+
+    // If workflow type is specified, filter by workflow relation
+    if (workflowType) {
+      queryParams.filter = {
+        property: 'Workflow',
+        relation: {
+          contains: workflowType
+        }
+      };
+      console.log(`🔄 Filtering workflow pages by workflow type: ${workflowType}`);
+    }
+
+    const response = await notion.databases.query(queryParams);
 
     return response.results.map(page => ({
       id: page.id,
@@ -355,8 +389,15 @@ function cleanPropertiesForAPI(properties, allowedProperties = []) {
     if (!value) continue;
 
     // Skip properties that don't exist in target database (but allow Title and Name for mapping)
-    if (allowedProperties.length > 0 && !allowedProperties.includes(key) && key !== 'Title' && key !== 'Name') {
+    // Also skip the "Workflow" property as it's only used for filtering templates
+    if (allowedProperties.length > 0 && !allowedProperties.includes(key) && key !== 'Title' && key !== 'Name' && key !== 'Workflow') {
       console.log(`Skipping property '${key}' - not found in target database schema`);
+      continue;
+    }
+
+    // Explicitly skip the Workflow property since it's only used for filtering templates
+    if (key === 'Workflow') {
+      console.log(`Skipping property 'Workflow' - not needed in target database`);
       continue;
     }
 
