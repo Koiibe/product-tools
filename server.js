@@ -90,7 +90,8 @@ app.post('/webhook/notion', async (req, res) => {
 
       // Extract epic relations for each workflow type
       if (!batchEpicId) {
-        const batchEpicProp = generatorProps['Batch Epic'] ||
+        const batchEpicProp = generatorProps['📚 Batch Epic'] ||
+                             generatorProps['Batch Epic'] ||
                              generatorProps['batchEpic'] ||
                              generatorProps['Batch'];
 
@@ -101,7 +102,8 @@ app.post('/webhook/notion', async (req, res) => {
       }
 
       if (!skuEpicId) {
-        const skuEpicProp = generatorProps['SKU Epic'] ||
+        const skuEpicProp = generatorProps['📚 SKU Epic'] ||
+                           generatorProps['SKU Epic'] ||
                            generatorProps['skuEpic'] ||
                            generatorProps['SKU'];
 
@@ -112,7 +114,8 @@ app.post('/webhook/notion', async (req, res) => {
       }
 
       if (!marketEpicId) {
-        const marketEpicProp = generatorProps['Market Epic'] ||
+        const marketEpicProp = generatorProps['📚 Market Epic'] ||
+                              generatorProps['Market Epic'] ||
                               generatorProps['marketEpic'] ||
                               generatorProps['Market'];
 
@@ -152,6 +155,8 @@ app.post('/webhook/notion', async (req, res) => {
       'New batch': batchEpicId,
       'Batch': batchEpicId,
       'batch': batchEpicId,
+      'New Batch': batchEpicId,
+      'new batch': batchEpicId,
       'New SKU': skuEpicId,
       'SKU': skuEpicId,
       'sku': skuEpicId,
