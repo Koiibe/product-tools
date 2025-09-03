@@ -41,11 +41,12 @@ app.post('/webhook/notion', async (req, res) => {
     console.log('Received webhook:', JSON.stringify(req.body, null, 2));
     console.log('Headers:', JSON.stringify(req.headers, null, 2));
 
-    // Extract epic ID from webhook payload - try multiple formats
+    // Extract epic ID and fulfill by date from webhook payload - try multiple formats
     // Notion buttons can send data in various formats
     let epicId = req.body.epicId;
+    let webhookFulfillBy = req.body.fulfillBy;
 
-    // FIRST: Check if the triggering page has an epic relation in its properties
+    // FIRST: Check if the triggering page has an epic relation and fulfill by date in its properties
     if (!epicId && req.body.data?.properties) {
       const epicProps = req.body.data.properties;
 
@@ -61,6 +62,20 @@ app.post('/webhook/notion', async (req, res) => {
       } else if (epicRelation?.rollup?.[0]?.relation?.[0]?.id) {
         epicId = epicRelation.rollup[0].relation[0].id;
         console.log('🎯 Found epic ID in rollup relation:', epicId);
+      }
+
+      // Extract fulfill by date from triggering page properties if not in webhook
+      if (!webhookFulfillBy) {
+        const fulfillByProp = epicProps['Fulfill By'] ||
+                             epicProps['Fulfill by'] ||
+                             epicProps['Due Date'] ||
+                             epicProps['Due'] ||
+                             epicProps['Deadline'];
+
+        if (fulfillByProp?.date?.start) {
+          webhookFulfillBy = fulfillByProp.date.start;
+          console.log('📅 Found fulfill by date in triggering page properties:', webhookFulfillBy);
+        }
       }
     }
 
@@ -82,18 +97,19 @@ app.post('/webhook/notion', async (req, res) => {
     }
 
     console.log('🎯 Final extracted epicId:', epicId);
-    
+    console.log('📅 Webhook fulfill by date:', webhookFulfillBy);
+
     if (!epicId) {
       console.log('No epic ID found in payload');
-      return res.status(400).json({ 
+      return res.status(400).json({
         error: 'No epic ID provided in webhook. Please ensure the button passes the page ID.',
         receivedPayload: req.body,
         suggestion: 'Add a custom property with key "epicId" and value "{{page.id}}" to the webhook configuration'
       });
     }
 
-    // Process the workflow copying
-    await processWorkflowCopy(epicId);
+    // Process the workflow copying with the webhook fulfill by date
+    await processWorkflowCopy(epicId, webhookFulfillBy);
 
     res.status(200).json({ message: 'Workflow processing completed successfully' });
   } catch (error) {
@@ -148,7 +164,7 @@ app.get('/test-epic/:epicId', async (req, res) => {
 });
 
 // Main processing function
-async function processWorkflowCopy(epicId) {
+async function processWorkflowCopy(epicId, webhookFulfillBy = null) {
   try {
     console.log(`Processing workflow copy for epic: ${epicId}`);
     addDebugMessage(`Starting workflow copy for epic: ${epicId}`);
@@ -159,12 +175,26 @@ async function processWorkflowCopy(epicId) {
     console.log('Epic details:', epicDetails);
     addDebugMessage(`Epic details retrieved: ${JSON.stringify(epicDetails)}`);
 
+    // Use webhook fulfill by date if epic doesn't have one
+    let effectiveFulfillBy = epicDetails.fulfillBy;
+    if (!effectiveFulfillBy && webhookFulfillBy) {
+      effectiveFulfillBy = new Date(webhookFulfillBy);
+      console.log('📅 Using webhook fulfill by date:', effectiveFulfillBy);
+      addDebugMessage(`Using webhook fulfill by date: ${effectiveFulfillBy}`);
+    } else if (effectiveFulfillBy) {
+      console.log('📅 Using epic fulfill by date:', effectiveFulfillBy);
+      addDebugMessage(`Using epic fulfill by date: ${effectiveFulfillBy}`);
+    } else {
+      console.log('⚠️ No fulfill by date found - dates will not be translated');
+      addDebugMessage('No fulfill by date found - dates will not be translated');
+    }
+
     // Step 2: Get all pages from Product Workflows database
     const workflowPages = await getWorkflowPages();
     console.log(`Found ${workflowPages.length} workflow pages`);
 
     // Step 3: Calculate date translation
-    const dateTranslation = calculateDateTranslation(workflowPages, epicDetails.fulfillBy);
+    const dateTranslation = calculateDateTranslation(workflowPages, effectiveFulfillBy);
 
     // Step 4: Copy pages to Stories database
     const copiedPages = await copyPagesToStories(workflowPages, epicDetails, dateTranslation);
@@ -184,13 +214,30 @@ async function getEpicDetails(epicId) {
     const response = await notion.pages.retrieve({ page_id: epicId });
     console.log('Epic response received:', JSON.stringify(response.properties, null, 2));
 
-    // Get the fulfill by property (adjust property name as needed)
-    const fulfillByProperty = response.properties['Fulfill By'] || response.properties['Due Date'];
-
+    // Get the fulfill by property - try multiple property names
     let fulfillBy = null;
-    if (fulfillByProperty && fulfillByProperty.date) {
-      fulfillBy = new Date(fulfillByProperty.date.start);
-      console.log(`Found fulfill by date: ${fulfillBy}`);
+    const fulfillByCandidates = [
+      'Fulfill By',      // Exact match
+      'Fulfill by',      // Different casing
+      'Due Date',        // Alternative name
+      'Due',             // Short form
+      'Deadline',        // Alternative name
+      'Target Date',     // Alternative name
+      'End Date',        // Alternative name
+      'Completion Date'  // Alternative name
+    ];
+
+    for (const propName of fulfillByCandidates) {
+      const prop = response.properties[propName];
+      if (prop?.date?.start) {
+        fulfillBy = new Date(prop.date.start);
+        console.log(`📅 Found fulfill by date from ${propName}: ${fulfillBy}`);
+        break; // Use the first one found
+      }
+    }
+
+    if (!fulfillBy) {
+      console.log('⚠️ No fulfill by date property found. Available properties:', Object.keys(response.properties));
     }
 
     // Try different property names for the epic name
@@ -262,20 +309,28 @@ async function getWorkflowPages() {
 // Calculate date translation to maintain relational distance
 function calculateDateTranslation(workflowPages, epicFulfillBy) {
   if (!epicFulfillBy || workflowPages.length === 0) {
+    console.log('📅 No fulfill by date or no workflow pages - no translation');
     return { offset: 0 };
   }
 
   // Find the latest date in workflow pages
-  const latestWorkflowDate = workflowPages
-    .filter(page => page.date)
-    .reduce((latest, page) => page.date > latest ? page.date : latest, new Date(0));
+  const pagesWithDates = workflowPages.filter(page => page.date);
+  console.log(`📅 Found ${pagesWithDates.length} workflow pages with dates out of ${workflowPages.length} total`);
 
-  if (latestWorkflowDate.getTime() === 0) {
+  if (pagesWithDates.length === 0) {
+    console.log('📅 No workflow pages have dates - no translation');
     return { offset: 0 };
   }
 
+  const latestWorkflowDate = pagesWithDates.reduce((latest, page) => page.date > latest ? page.date : latest, new Date(0));
+  console.log(`📅 Latest workflow date: ${latestWorkflowDate.toISOString().split('T')[0]}`);
+  console.log(`📅 Epic fulfill by date: ${epicFulfillBy.toISOString().split('T')[0]}`);
+
   // Calculate offset to align latest workflow date with epic fulfill by date
   const offset = epicFulfillBy.getTime() - latestWorkflowDate.getTime();
+  const offsetDays = Math.round(offset / (1000 * 60 * 60 * 24));
+
+  console.log(`📅 Date translation offset: ${offsetDays} days`);
 
   return { offset };
 }
