@@ -172,14 +172,38 @@ function calculateDateTranslation(workflowPages, epicFulfillBy) {
   return { offset };
 }
 
+// Clean properties for Notion API - removes read-only fields that cause validation errors
+function cleanPropertiesForAPI(properties) {
+  const cleanedProperties = {};
+  
+  for (const [key, value] of Object.entries(properties)) {
+    if (!value) continue;
+    
+    // Handle people properties - clean user objects to only include ID
+    if (value.people && Array.isArray(value.people)) {
+      cleanedProperties[key] = {
+        people: value.people.map(person => ({
+          id: person.id
+        }))
+      };
+    }
+    // Handle other property types normally
+    else {
+      cleanedProperties[key] = value;
+    }
+  }
+  
+  return cleanedProperties;
+}
+
 // Copy pages to Stories database with translations
 async function copyPagesToStories(workflowPages, epicDetails, dateTranslation) {
   const copiedPages = [];
 
   for (const workflowPage of workflowPages) {
     try {
-      // Prepare new page properties
-      const newProperties = { ...workflowPage.properties };
+      // Prepare new page properties and clean them for API
+      const newProperties = cleanPropertiesForAPI({ ...workflowPage.properties });
 
       // Add epic name as prefix to title
       if (newProperties.Name && newProperties.Name.title) {
