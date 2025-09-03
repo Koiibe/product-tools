@@ -395,10 +395,19 @@ async function copyPagesToStories(workflowPages, epicDetails, dateTranslation) {
       // Handle title mapping - source has 'Name', target has 'Title'
       let originalTitle = '';
 
-      // Debug: Log what properties are available
+      // Debug: Log what properties and metadata are available
       const pageProps = Object.keys(workflowPage.properties);
       addDebugMessage(`Page ${workflowPage.id} properties: [${pageProps.join(', ')}]`);
       console.log(`Page properties for ${workflowPage.id}:`, pageProps);
+
+      // Debug: Check for icon in the source page
+      if (workflowPage.icon) {
+        addDebugMessage(`Source page ${workflowPage.id} has icon: ${JSON.stringify(workflowPage.icon)}`);
+        console.log(`🎨 Source page has icon:`, workflowPage.icon);
+      } else {
+        addDebugMessage(`Source page ${workflowPage.id} has no icon`);
+        console.log(`🎨 Source page has no icon`);
+      }
 
       if (newProperties.Name && newProperties.Name.title) {
         originalTitle = newProperties.Name.title[0]?.plain_text || '';
@@ -454,11 +463,21 @@ async function copyPagesToStories(workflowPages, epicDetails, dateTranslation) {
         };
       }
 
-      // Create new page in Stories database
-      const newPage = await notion.pages.create({
+      // Prepare page creation parameters
+      const pageParams = {
         parent: { database_id: STORIES_DB_ID },
         properties: newProperties,
-      });
+      };
+
+      // Copy icon from source page if it exists
+      if (workflowPage.icon) {
+        pageParams.icon = workflowPage.icon;
+        addDebugMessage(`Copying icon from source page: ${JSON.stringify(workflowPage.icon)}`);
+        console.log(`📎 Copying icon from source page:`, workflowPage.icon);
+      }
+
+      // Create new page in Stories database
+      const newPage = await notion.pages.create(pageParams);
 
       copiedPages.push(newPage);
       console.log(`Created page: ${newPage.id}`);
