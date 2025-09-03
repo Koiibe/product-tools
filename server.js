@@ -279,16 +279,16 @@ async function processWorkflowCopy(epicId, webhookTargetDate = null, workflowTyp
       throw new Error(`Failed to retrieve epic details for ID: ${epicId}`);
     }
 
-    // Use webhook target date if epic doesn't have one
-    let effectiveTargetDate = epicDetails.fulfillBy;
-    if (!effectiveTargetDate && webhookTargetDate) {
-      effectiveTargetDate = new Date(webhookTargetDate);
+    // Use the reference date passed from processMultipleWorkflows
+    let effectiveTargetDate = webhookTargetDate;
+    if (!effectiveTargetDate) {
+      effectiveTargetDate = epicDetails.fulfillBy || new Date();
     }
 
     // Step 2: Get workflow pages filtered by workflow type
     const workflowPages = await getWorkflowPages(workflowType);
 
-    // Step 3: Calculate date translation
+    // Step 3: Calculate date translation using the consistent reference date
     const dateTranslation = calculateDateTranslation(workflowPages, effectiveTargetDate);
 
     // Step 4: Copy pages to Stories database
@@ -466,7 +466,8 @@ async function processMultipleWorkflows(workflowConfigs, targetDate) {
   const allTemplateToPageMaps = {}; // Collect all template mappings for dependency resolution
   const allWorkflowPages = {}; // Collect all workflow pages for dependency resolution
 
-  // First pass: collect all epics and process workflows without resolving dependencies
+  // First pass: collect all workflow pages to find reference date
+  console.log('📅 Collecting workflow pages to determine reference date...');
   for (const config of workflowConfigs) {
     try {
       if (!config.epicId) {
@@ -477,7 +478,36 @@ async function processMultipleWorkflows(workflowConfigs, targetDate) {
       const epicDetails = await getEpicDetails(config.epicId);
       allEpics.push({ id: config.epicId, name: epicDetails.name });
 
-      const result = await processWorkflowCopy(config.epicId, targetDate, config.type, allEpics);
+      // Get workflow pages without processing them yet
+      const workflowPages = await getWorkflowPages(config.type);
+      allWorkflowPages[config.type] = workflowPages;
+
+    } catch (error) {
+      console.error(`❌ Failed to collect pages for workflow ${config.name}:`, error.message);
+      results.push({
+        workflow: config.name,
+        success: false,
+        error: error.message,
+        epicId: config.epicId
+      });
+    }
+  }
+
+  // Find reference date across all workflow pages
+  const referenceDate = findReferenceDate(allWorkflowPages);
+  const referenceDateForTranslation = referenceDate || new Date(targetDate);
+
+  console.log(`📅 Reference date for all workflows: ${referenceDateForTranslation.toISOString().split('T')[0]}`);
+
+  // Second pass: process workflows with consistent reference date
+  for (const config of workflowConfigs) {
+    // Skip failed workflows from first pass
+    if (results.some(r => r.workflow === config.name && !r.success)) {
+      continue;
+    }
+
+    try {
+      const result = await processWorkflowCopy(config.epicId, referenceDateForTranslation, config.type, allEpics);
       results.push({
         workflow: config.name,
         success: true,
@@ -487,12 +517,9 @@ async function processMultipleWorkflows(workflowConfigs, targetDate) {
         epicId: config.epicId
       });
 
-      // Collect template mappings and workflow pages for dependency resolution
+      // Collect template mappings for dependency resolution
       if (result.templateToPageMap) {
         Object.assign(allTemplateToPageMaps, result.templateToPageMap);
-      }
-      if (result.workflowPages) {
-        allWorkflowPages[config.type] = result.workflowPages;
       }
 
     } catch (error) {
@@ -506,7 +533,7 @@ async function processMultipleWorkflows(workflowConfigs, targetDate) {
     }
   }
 
-  // Second pass: Resolve dependencies across all workflows
+  // Resolve dependencies across all workflows
   if (Object.keys(allTemplateToPageMaps).length > 0) {
     console.log(`\n🔗 Resolving cross-workflow dependencies for ${Object.keys(allTemplateToPageMaps).length} pages`);
     await resolveCrossWorkflowDependencies(allTemplateToPageMaps, allWorkflowPages);
@@ -845,24 +872,68 @@ async function copyChildBlocks(sourceBlockId, destinationPageId, parentBlocks) {
 }
 
 // Calculate date translation to maintain relational distance
-function calculateDateTranslation(workflowPages, epicFulfillBy) {
-  if (!epicFulfillBy || workflowPages.length === 0) {
+function calculateDateTranslation(workflowPages, referenceDate) {
+  if (!referenceDate || workflowPages.length === 0) {
     return { offset: 0 };
   }
 
-  // Find the latest date in workflow pages
+  // Find the latest date in workflow pages to align with reference date
   const pagesWithDates = workflowPages.filter(page => page.date);
 
   if (pagesWithDates.length === 0) {
     return { offset: 0 };
   }
 
-  const latestWorkflowDate = pagesWithDates.reduce((latest, page) => page.date > latest ? page.date : latest, new Date(0));
+  const latestWorkflowDate = pagesWithDates.reduce((latest, page) =>
+    page.date > latest ? page.date : latest, new Date(0)
+  );
 
-  // Calculate offset to align latest workflow date with epic fulfill by date
-  const offset = epicFulfillBy.getTime() - latestWorkflowDate.getTime();
+  // Calculate offset to align latest workflow date with reference date
+  const offset = referenceDate.getTime() - latestWorkflowDate.getTime();
 
   return { offset };
+}
+
+// Find reference date across all workflow pages
+// Priority: Target date page if exists, otherwise latest date across all pages
+function findReferenceDate(allWorkflowPages) {
+  // Flatten all workflow pages into a single array
+  const allPages = [];
+  for (const workflowType in allWorkflowPages) {
+    if (allWorkflowPages[workflowType]) {
+      allPages.push(...allWorkflowPages[workflowType]);
+    }
+  }
+
+  if (allPages.length === 0) {
+    return null;
+  }
+
+  // First, check if there's a "Target date" page
+  const targetDatePage = allPages.find(page =>
+    page.properties?.Name?.title?.[0]?.plain_text?.toLowerCase().includes('target date') ||
+    page.properties?.Name?.rich_text?.[0]?.plain_text?.toLowerCase().includes('target date') ||
+    page.properties?.Title?.title?.[0]?.plain_text?.toLowerCase().includes('target date')
+  );
+
+  if (targetDatePage && targetDatePage.date) {
+    console.log(`📅 Using target date page as reference: ${targetDatePage.date.toISOString().split('T')[0]}`);
+    return targetDatePage.date;
+  }
+
+  // If no target date page, find the latest date across all pages
+  const pagesWithDates = allPages.filter(page => page.date);
+  if (pagesWithDates.length === 0) {
+    console.log('📅 No dates found in workflow pages');
+    return null;
+  }
+
+  const latestDate = pagesWithDates.reduce((latest, page) =>
+    page.date > latest ? page.date : latest, new Date(0)
+  );
+
+  console.log(`📅 Using latest date across all workflows as reference: ${latestDate.toISOString().split('T')[0]}`);
+  return latestDate;
 }
 
 // Get database schema to understand what properties exist
