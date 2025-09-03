@@ -172,12 +172,29 @@ function calculateDateTranslation(workflowPages, epicFulfillBy) {
   return { offset };
 }
 
-// Clean properties for Notion API - removes read-only fields that cause validation errors
-function cleanPropertiesForAPI(properties) {
+// Get database schema to understand what properties exist
+async function getDatabaseSchema(databaseId) {
+  try {
+    const database = await notion.databases.retrieve({ database_id: databaseId });
+    return Object.keys(database.properties);
+  } catch (error) {
+    console.error(`Error getting database schema for ${databaseId}:`, error.message);
+    return [];
+  }
+}
+
+// Clean properties for Notion API and filter for target database schema
+function cleanPropertiesForAPI(properties, allowedProperties = []) {
   const cleanedProperties = {};
   
   for (const [key, value] of Object.entries(properties)) {
     if (!value) continue;
+    
+    // Skip properties that don't exist in target database
+    if (allowedProperties.length > 0 && !allowedProperties.includes(key)) {
+      console.log(`Skipping property '${key}' - not found in target database schema`);
+      continue;
+    }
     
     // Handle people properties - clean user objects to only include ID
     if (value.people && Array.isArray(value.people)) {
@@ -199,11 +216,16 @@ function cleanPropertiesForAPI(properties) {
 // Copy pages to Stories database with translations
 async function copyPagesToStories(workflowPages, epicDetails, dateTranslation) {
   const copiedPages = [];
+  
+  // Get Stories database schema to know which properties are allowed
+  console.log('Getting Stories database schema...');
+  const storiesSchema = await getDatabaseSchema(STORIES_DB_ID);
+  console.log('Stories database properties:', storiesSchema);
 
   for (const workflowPage of workflowPages) {
     try {
       // Prepare new page properties and clean them for API
-      const newProperties = cleanPropertiesForAPI({ ...workflowPage.properties });
+      const newProperties = cleanPropertiesForAPI({ ...workflowPage.properties }, storiesSchema);
 
       // Add epic name as prefix to title
       if (newProperties.Name && newProperties.Name.title) {
