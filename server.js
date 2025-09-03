@@ -229,10 +229,22 @@ async function copyPagesToStories(workflowPages, epicDetails, dateTranslation) {
 
       // Handle title mapping - source has 'Name', target has 'Title'
       let originalTitle = '';
+
+      // Debug: Log what properties are available
+      console.log(`Page properties for ${workflowPage.id}:`, Object.keys(workflowPage.properties));
+
       if (newProperties.Name && newProperties.Name.title) {
         originalTitle = newProperties.Name.title[0]?.plain_text || '';
+        console.log(`Found Name property with title: "${originalTitle}"`);
         // Remove the Name property since target doesn't have it
         delete newProperties.Name;
+      } else if (newProperties.Name && newProperties.Name.rich_text) {
+        // Try rich_text format
+        originalTitle = newProperties.Name.rich_text[0]?.plain_text || '';
+        console.log(`Found Name property with rich_text: "${originalTitle}"`);
+        delete newProperties.Name;
+      } else {
+        console.log('No Name property found or it has unexpected format:', newProperties.Name);
       }
 
       // Create Title property with epic prefix
@@ -243,6 +255,16 @@ async function copyPagesToStories(workflowPages, epicDetails, dateTranslation) {
             type: 'text'
           }]
         };
+        console.log(`Created Title property: "${epicDetails.name}: ${originalTitle}"`);
+      } else {
+        // Fallback: create a generic title if no name was found
+        newProperties.Title = {
+          title: [{
+            plain_text: `${epicDetails.name}: Workflow Task`,
+            type: 'text'
+          }]
+        };
+        console.log(`Created fallback Title property: "${epicDetails.name}: Workflow Task"`);
       }
 
       // Translate dates
