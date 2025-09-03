@@ -21,11 +21,6 @@ const notion = new Client({
 const PRODUCT_WORKFLOWS_DB_ID = '263ce8f7317a804dad72cac4e8a5aa60';
 const STORIES_DB_ID = '1c1ce8f7317a80dfafc4d95c8cb67c3e';
 
-// Target template pages - the specific pages we want to copy
-const TARGET_TEMPLATE_PAGES = [
-  '263ce8f7317a80c4afa2fb66c2461e19'  // New target date page with all three epics
-];
-
 // Store recent debug messages
 let debugMessages = [];
 const MAX_DEBUG_MESSAGES = 50;
@@ -442,31 +437,7 @@ async function getWorkflowPages(workflowType = null) {
       icon: page.icon, // Include icon information for copying
     }));
 
-    // If workflow type is specified, also include the target template pages that might not have been captured by the filter
-    if (workflowType && TARGET_TEMPLATE_PAGES.length > 0) {
-      console.log('🔍 Checking for additional target template pages...');
 
-      for (const targetPageId of TARGET_TEMPLATE_PAGES) {
-        try {
-          const targetPage = await notion.pages.retrieve({ page_id: targetPageId });
-          console.log(`📄 Retrieved target page: ${targetPageId}`);
-
-          // Check if this page is already in our results
-          const alreadyExists = workflowPages.some(page => page.id === targetPageId);
-          if (!alreadyExists) {
-            workflowPages.push({
-              id: targetPage.id,
-              properties: targetPage.properties,
-              date: targetPage.properties.Date?.date?.start ? new Date(targetPage.properties.Date.date.start) : null,
-              icon: targetPage.icon,
-            });
-            console.log(`➕ Added target page ${targetPageId} to workflow pages`);
-          }
-        } catch (error) {
-          console.error(`⚠️ Could not retrieve target page ${targetPageId}:`, error.message);
-        }
-      }
-    }
 
     return workflowPages;
   } catch (error) {
@@ -946,7 +917,6 @@ function cleanPropertiesForAPI(properties, allowedProperties = []) {
 async function copyPagesToStories(workflowPages, epicDetails, dateTranslation, workflowType = null, allEpics = []) {
   const copiedPages = [];
   const templateToPageMap = {}; // Map template page names to new page IDs
-  let targetDatePageCopied = false; // Track if target date page has been copied
 
   // Get Stories database schema to know which properties are allowed
   console.log('Getting Stories database schema...');
@@ -955,12 +925,6 @@ async function copyPagesToStories(workflowPages, epicDetails, dateTranslation, w
 
   for (const workflowPage of workflowPages) {
     try {
-      // Special handling for target date page - only copy once
-      const isTargetDatePage = TARGET_TEMPLATE_PAGES.includes(workflowPage.id);
-      if (isTargetDatePage && targetDatePageCopied) {
-        console.log(`⏭️ Skipping target date page ${workflowPage.id} - already copied`);
-        continue;
-      }
 
       // Prepare new page properties and clean them for API
       // Keep the Name property for title mapping, even if it's not in target schema
@@ -1064,28 +1028,16 @@ async function copyPagesToStories(workflowPages, epicDetails, dateTranslation, w
 
             if (startDate >= endDate) {
               console.warn(`⚠️ Invalid date range: ${originalDate.start}-${originalDate.end}`);
-              if (isTargetDatePage) {
-                console.warn(`🎯 Target page: date property removed`);
-                delete newProperties.Date;
-              }
             }
           }
         }
       }
 
-      // Add relation to epic(s) - use all epics for target date page
+      // Add relation to epic
       if (!newProperties.Epic) {
-        if (isTargetDatePage && allEpics.length > 0) {
-          // Target date page gets all epics
-          newProperties.Epic = {
-            relation: allEpics.map(epic => ({ id: epic.id }))
-          };
-        } else {
-          // Regular pages get the current epic
-          newProperties.Epic = {
-            relation: [{ id: epicDetails.id }]
-          };
-        }
+        newProperties.Epic = {
+          relation: [{ id: epicDetails.id }]
+        };
       }
 
       // Prepare page creation parameters
@@ -1110,10 +1062,7 @@ async function copyPagesToStories(workflowPages, epicDetails, dateTranslation, w
         console.error(`⚠️ Content copy failed for ${workflowPage.id}: ${contentError.message}`);
       }
 
-      // Mark target date page as copied
-      if (isTargetDatePage) {
-        targetDatePageCopied = true;
-      }
+
 
       // Track the mapping from template page name to new page ID for dependency resolution
       if (originalTitle) {
@@ -1121,42 +1070,6 @@ async function copyPagesToStories(workflowPages, epicDetails, dateTranslation, w
       }
     } catch (error) {
       console.error(`Error copying page ${workflowPage.id}:`, error);
-
-      // Special handling for target date page errors
-      if (isTargetDatePage) {
-        console.error(`❌ Target page failed: ${workflowPage.id} - ${error.message}`);
-
-        // Try to copy target date page without date property if it's causing validation errors
-        if (error.message && error.message.includes('date range')) {
-          console.log(`🎯 Retrying target page without date property...`);
-          try {
-            const retryProperties = { ...newProperties };
-            delete retryProperties.Date;
-
-            const retryPageParams = {
-              parent: { database_id: STORIES_DB_ID },
-              properties: retryProperties,
-            };
-
-            if (workflowPage.icon) {
-              retryPageParams.icon = workflowPage.icon;
-            }
-
-            const retryNewPage = await notion.pages.create(retryPageParams);
-            console.log(`✅ Target page copied: ${retryNewPage.id}`);
-
-            copiedPages.push(retryNewPage);
-            if (originalTitle) {
-              templateToPageMap[originalTitle] = retryNewPage.id;
-            }
-            targetDatePageCopied = true;
-            return;
-          } catch (retryError) {
-            console.error(`❌ Target page retry failed: ${retryError.message}`);
-          }
-        }
-      }
-
       // Continue with other pages even if one fails
     }
   }
