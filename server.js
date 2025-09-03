@@ -96,6 +96,14 @@ app.get('/debug', (req, res) => {
     message: 'Recent debug messages',
     timestamp: new Date().toISOString(),
     apiKey: process.env.NOTION_API_TOKEN || process.env.NOTION_API_KEY ? 'Set' : 'Missing',
+    apiKeyFormat: (() => {
+      const key = process.env.NOTION_API_TOKEN || process.env.NOTION_API_KEY;
+      if (!key) return 'No key';
+      const isSecret = key.startsWith('secret_');
+      const isNtn = key.startsWith('ntn_');
+      return isSecret ? 'secret_ format' : isNtn ? 'ntn_ format' : 'Invalid format';
+    })(),
+    apiKeyLength: (process.env.NOTION_API_TOKEN || process.env.NOTION_API_KEY || '').length,
     recentMessages: debugMessages.slice(-10) // Show last 10 messages
   });
 });
@@ -130,7 +138,9 @@ async function processWorkflowCopy(epicId) {
 // Get epic details including fulfill by date
 async function getEpicDetails(epicId) {
   try {
+    console.log(`Retrieving epic details for ID: ${epicId}`);
     const response = await notion.pages.retrieve({ page_id: epicId });
+    console.log('Epic response received:', JSON.stringify(response.properties, null, 2));
 
     // Get the fulfill by property (adjust property name as needed)
     const fulfillByProperty = response.properties['Fulfill By'] || response.properties['Due Date'];
@@ -138,11 +148,28 @@ async function getEpicDetails(epicId) {
     let fulfillBy = null;
     if (fulfillByProperty && fulfillByProperty.date) {
       fulfillBy = new Date(fulfillByProperty.date.start);
+      console.log(`Found fulfill by date: ${fulfillBy}`);
+    }
+
+    // Try different property names for the epic name
+    let epicName = 'Unnamed Epic'; // fallback
+
+    if (response.properties.Name?.title?.[0]?.plain_text) {
+      epicName = response.properties.Name.title[0].plain_text;
+      console.log(`Found epic name from Name.title: "${epicName}"`);
+    } else if (response.properties.Name?.rich_text?.[0]?.plain_text) {
+      epicName = response.properties.Name.rich_text[0].plain_text;
+      console.log(`Found epic name from Name.rich_text: "${epicName}"`);
+    } else if (response.properties.Title?.title?.[0]?.plain_text) {
+      epicName = response.properties.Title.title[0].plain_text;
+      console.log(`Found epic name from Title.title: "${epicName}"`);
+    } else {
+      console.log('Epic name not found, using fallback. Available properties:', Object.keys(response.properties));
     }
 
     return {
       id: epicId,
-      name: response.properties.Name?.title?.[0]?.plain_text || 'Unnamed Epic',
+      name: epicName,
       fulfillBy: fulfillBy
     };
   } catch (error) {
