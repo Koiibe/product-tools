@@ -28,18 +28,30 @@ app.post('/webhook/notion', async (req, res) => {
     console.log('Headers:', JSON.stringify(req.headers, null, 2));
 
     // Extract epic ID from webhook payload - try multiple formats
-    const epicId = req.body.epicId || 
-                   req.body.page?.id || 
-                   req.body.pageId ||
-                   req.body.id;
+    // Notion buttons can send data in various formats
+    let epicId = req.body.epicId || 
+                 req.body.page?.id || 
+                 req.body.pageId ||
+                 req.body.id;
+    
+    // If no direct ID, check if it's in the properties or context
+    if (!epicId && req.body.context?.pageId) {
+      epicId = req.body.context.pageId;
+    }
+    
+    // Check for page ID in automation context
+    if (!epicId && req.body.automationContext?.pageId) {
+      epicId = req.body.automationContext.pageId;
+    }
     
     console.log('Extracted epicId:', epicId);
     
     if (!epicId) {
       console.log('No epic ID found in payload');
       return res.status(400).json({ 
-        error: 'No epic ID provided in webhook',
-        receivedPayload: req.body 
+        error: 'No epic ID provided in webhook. Please ensure the button passes the page ID.',
+        receivedPayload: req.body,
+        suggestion: 'Add a custom property with key "epicId" and value "{{page.id}}" to the webhook configuration'
       });
     }
 
