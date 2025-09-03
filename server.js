@@ -24,12 +24,23 @@ const STORIES_DB_ID = '1c1ce8f7317a80dfafc4d95c8cb67c3e';
 // Webhook endpoint for Notion button
 app.post('/webhook/notion', async (req, res) => {
   try {
-    console.log('Received webhook:', req.body);
+    console.log('Received webhook:', JSON.stringify(req.body, null, 2));
+    console.log('Headers:', JSON.stringify(req.headers, null, 2));
 
-    // Extract epic ID from webhook payload
-    const epicId = req.body.epicId || req.body.page?.id;
+    // Extract epic ID from webhook payload - try multiple formats
+    const epicId = req.body.epicId || 
+                   req.body.page?.id || 
+                   req.body.pageId ||
+                   req.body.id;
+    
+    console.log('Extracted epicId:', epicId);
+    
     if (!epicId) {
-      return res.status(400).json({ error: 'No epic ID provided in webhook' });
+      console.log('No epic ID found in payload');
+      return res.status(400).json({ 
+        error: 'No epic ID provided in webhook',
+        receivedPayload: req.body 
+      });
     }
 
     // Process the workflow copying
