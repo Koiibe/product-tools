@@ -14,7 +14,7 @@ app.use(bodyParser.urlencoded({ extended: true }));
 
 // Initialize Notion client
 const notion = new Client({
-  auth: process.env.NOTION_API_KEY,
+  auth: process.env.NOTION_API_TOKEN || process.env.NOTION_API_KEY,
 });
 
 // Database IDs
@@ -269,7 +269,13 @@ async function copyPagesToStories(workflowPages, epicDetails, dateTranslation) {
 // Start server
 app.listen(PORT, () => {
   console.log(`Server is running on port ${PORT}`);
-  console.log('Notion API Key:', process.env.NOTION_API_KEY ? 'Set' : 'Missing');
+  const apiKey = process.env.NOTION_API_TOKEN || process.env.NOTION_API_KEY;
+  console.log('Notion API Key:', apiKey ? 'Set' : 'Missing');
+  if (apiKey) {
+    const isValidFormat = apiKey.startsWith('secret_') || apiKey.startsWith('ntn_');
+    console.log('API Key format check:', isValidFormat ? 'Valid format' : 'Invalid format - should start with secret_ or ntn_');
+    console.log('API Key length:', apiKey.length);
+  }
 });
 
 module.exports = app;
