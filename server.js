@@ -38,8 +38,9 @@ function addDebugMessage(message) {
 // Webhook endpoint for Notion button
 app.post('/webhook/notion', async (req, res) => {
   try {
-    console.log('Received webhook:', JSON.stringify(req.body, null, 2));
-    console.log('Headers:', JSON.stringify(req.headers, null, 2));
+    console.log('🚀 Received webhook request');
+    console.log('Request body:', JSON.stringify(req.body, null, 2));
+    console.log('Request headers:', JSON.stringify(req.headers, null, 2));
 
     // Extract multiple epic IDs, target date, and workflow types from webhook payload
     // New format: single row with multi-select workflows and multiple epic relations
@@ -185,18 +186,42 @@ app.post('/webhook/notion', async (req, res) => {
     }
 
     // Process multiple workflows
-    const workflowConfigs = selectedWorkflows.map(workflow => ({
-      type: workflow,
-      epicId: workflowEpicMap[workflow],
-      name: workflow
-    }));
+    try {
+      const workflowConfigs = selectedWorkflows.map(workflow => ({
+        type: workflow,
+        epicId: workflowEpicMap[workflow],
+        name: workflow
+      }));
 
-    await processMultipleWorkflows(workflowConfigs, webhookTargetDate);
+      console.log('🔄 Processing workflows:', workflowConfigs.map(w => w.name));
 
-    res.status(200).json({ message: 'Workflow processing completed successfully' });
-  } catch (error) {
-    console.error('Webhook processing error:', error);
-    res.status(500).json({ error: 'Internal server error', details: error.message });
+      const results = await processMultipleWorkflows(workflowConfigs, webhookTargetDate);
+
+      console.log('✅ Webhook processing completed successfully');
+      res.status(200).json({
+        message: 'Workflow processing completed successfully',
+        results: results
+      });
+    } catch (processingError) {
+      console.error('❌ Workflow processing failed:', processingError);
+      res.status(500).json({
+        error: 'Workflow processing failed',
+        details: processingError.message,
+        workflowType: selectedWorkflows
+      });
+    }
+  } catch (webhookError) {
+    console.error('❌ Webhook processing error:', webhookError);
+    console.error('Error stack:', webhookError.stack);
+
+    // Ensure we always return a proper response
+    if (!res.headersSent) {
+      res.status(400).json({
+        error: 'Webhook processing failed',
+        details: webhookError.message,
+        receivedBody: req.body
+      });
+    }
   }
 });
 
@@ -248,13 +273,24 @@ app.get('/test-epic/:epicId', async (req, res) => {
 // Main processing function
 async function processWorkflowCopy(epicId, webhookTargetDate = null, workflowType = null) {
   try {
-    console.log(`Processing workflow copy for epic: ${epicId}`);
+    console.log(`⚙️ Processing workflow copy for epic: ${epicId} (${workflowType || 'default'})`);
     addDebugMessage(`Starting workflow copy for epic: ${epicId}`);
 
+    // Validate epicId
+    if (!epicId || typeof epicId !== 'string') {
+      throw new Error(`Invalid epic ID: ${epicId}`);
+    }
+
     // Step 1: Get epic details
+    console.log(`🔍 Retrieving epic details for ID: ${epicId}`);
     addDebugMessage(`Retrieving epic details for ID: ${epicId}`);
+
     const epicDetails = await getEpicDetails(epicId);
-    console.log('Epic details:', epicDetails);
+    if (!epicDetails) {
+      throw new Error(`Failed to retrieve epic details for ID: ${epicId}`);
+    }
+
+    console.log('📋 Epic details:', epicDetails);
     addDebugMessage(`Epic details retrieved: ${JSON.stringify(epicDetails)}`);
 
     // Use webhook target date if epic doesn't have one
@@ -292,9 +328,19 @@ async function processWorkflowCopy(epicId, webhookTargetDate = null, workflowTyp
 // Get epic details including fulfill by date
 async function getEpicDetails(epicId) {
   try {
-    console.log(`Retrieving epic details for ID: ${epicId}`);
+    console.log(`🔍 Retrieving epic details for ID: ${epicId}`);
+
+    if (!epicId || typeof epicId !== 'string') {
+      throw new Error(`Invalid epic ID: ${epicId}`);
+    }
+
     const response = await notion.pages.retrieve({ page_id: epicId });
-    console.log('Epic response received:', JSON.stringify(response.properties, null, 2));
+
+    if (!response || !response.properties) {
+      throw new Error('Invalid response from Notion API');
+    }
+
+    console.log('📋 Epic response received for properties:', Object.keys(response.properties));
 
     // Get the target date property - try multiple property names
     let fulfillBy = null;
@@ -360,7 +406,18 @@ async function getEpicDetails(epicId) {
       fulfillBy: fulfillBy
     };
   } catch (error) {
-    console.error('Error getting epic details:', error);
+    console.error('❌ Error getting epic details:', error.message);
+    console.error('Error details:', error);
+
+    // Provide more specific error messages
+    if (error.code === 'unauthorized') {
+      throw new Error('Notion API token is invalid or expired');
+    } else if (error.code === 'not_found') {
+      throw new Error(`Epic page not found. Please check the epic ID: ${epicId}`);
+    } else if (error.code === 'validation_error') {
+      throw new Error(`Invalid epic ID format: ${epicId}`);
+    }
+
     throw new Error(`Failed to get epic details: ${error.message}`);
   }
 }
@@ -398,7 +455,18 @@ async function getWorkflowPages(workflowType = null) {
       icon: page.icon, // Include icon information for copying
     }));
   } catch (error) {
-    console.error('Error getting workflow pages:', error);
+    console.error('❌ Error getting workflow pages:', error.message);
+    console.error('Error details:', error);
+
+    // Provide more specific error messages
+    if (error.code === 'unauthorized') {
+      throw new Error('Notion API token is invalid or expired');
+    } else if (error.code === 'not_found') {
+      throw new Error(`Database not found. Please check PRODUCT_WORKFLOWS_DB_ID: ${PRODUCT_WORKFLOWS_DB_ID}`);
+    } else if (error.message && error.message.includes('filter')) {
+      throw new Error(`Invalid filter for workflow type: ${workflowType}. Check if 'Workflow' property exists in your database.`);
+    }
+
     throw new Error(`Failed to get workflow pages: ${error.message}`);
   }
 }
@@ -411,11 +479,26 @@ async function processMultipleWorkflows(workflowConfigs, targetDate) {
   for (const config of workflowConfigs) {
     try {
       console.log(`\n▶️ Processing workflow: ${config.name} (Epic: ${config.epicId})`);
+
+      if (!config.epicId) {
+        throw new Error(`No epic ID provided for workflow: ${config.name}`);
+      }
+
       const result = await processWorkflowCopy(config.epicId, targetDate, config.type);
-      results.push({ workflow: config.name, success: true, pagesCopied: result });
+      results.push({
+        workflow: config.name,
+        success: true,
+        pagesCopied: result || 0,
+        epicId: config.epicId
+      });
     } catch (error) {
-      console.error(`❌ Failed to process workflow ${config.name}:`, error);
-      results.push({ workflow: config.name, success: false, error: error.message });
+      console.error(`❌ Failed to process workflow ${config.name}:`, error.message);
+      results.push({
+        workflow: config.name,
+        success: false,
+        error: error.message,
+        epicId: config.epicId
+      });
     }
   }
 
