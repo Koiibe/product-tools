@@ -102,7 +102,6 @@ app.post('/webhook/notion', async (req, res) => {
 
         if (batchEpicProp?.relation?.[0]?.id) {
           batchEpicId = batchEpicProp.relation[0].id;
-          console.log('🎯 Found Batch Epic ID:', batchEpicId);
         }
       }
 
@@ -114,7 +113,6 @@ app.post('/webhook/notion', async (req, res) => {
 
         if (skuEpicProp?.relation?.[0]?.id) {
           skuEpicId = skuEpicProp.relation[0].id;
-          console.log('🎯 Found SKU Epic ID:', skuEpicId);
         }
       }
 
@@ -126,7 +124,6 @@ app.post('/webhook/notion', async (req, res) => {
 
         if (marketEpicProp?.relation?.[0]?.id) {
           marketEpicId = marketEpicProp.relation[0].id;
-          console.log('🎯 Found Market Epic ID:', marketEpicId);
         }
       }
     }
@@ -134,7 +131,6 @@ app.post('/webhook/notion', async (req, res) => {
     // SECOND: Check headers for epic ID (in case it's sent there)
     if (!epicId && req.headers.epicid && req.headers.epicid !== '{{page.id}}') {
       epicId = req.headers.epicid;
-      console.log('🎯 Found epic ID in headers:', epicId);
     }
 
     // THIRD: Fallback to the triggering page ID (current page)
@@ -145,15 +141,9 @@ app.post('/webhook/notion', async (req, res) => {
                req.body.id ||
                req.body.context?.pageId ||
                req.body.automationContext?.pageId;
-      console.log('📄 Using triggering page ID as epic ID:', epicId);
     }
 
-    console.log('🎯 Extracted data:');
-    console.log('  - Selected workflows:', selectedWorkflows);
-    console.log('  - Target date:', webhookTargetDate);
-    console.log('  - Batch Epic:', batchEpicId);
-    console.log('  - SKU Epic:', skuEpicId);
-    console.log('  - Market Epic:', marketEpicId);
+    console.log(`🎯 Webhook: ${selectedWorkflows.length} workflows, target=${webhookTargetDate || 'none'}, epics=[${[batchEpicId, skuEpicId, marketEpicId].filter(Boolean).join(', ')}]`);
 
     // Validate that selected workflows have corresponding epic relations
     const workflowEpicMap = {
@@ -283,51 +273,31 @@ app.get('/test-epic/:epicId', async (req, res) => {
 // Main processing function
 async function processWorkflowCopy(epicId, webhookTargetDate = null, workflowType = null, allEpics = []) {
   try {
-    console.log(`⚙️ Processing workflow copy for epic: ${epicId} (${workflowType || 'default'})`);
-    addDebugMessage(`Starting workflow copy for epic: ${epicId}`);
-
     // Validate epicId
     if (!epicId || typeof epicId !== 'string') {
       throw new Error(`Invalid epic ID: ${epicId}`);
     }
 
     // Step 1: Get epic details
-    console.log(`🔍 Retrieving epic details for ID: ${epicId}`);
-    addDebugMessage(`Retrieving epic details for ID: ${epicId}`);
-
     const epicDetails = await getEpicDetails(epicId);
     if (!epicDetails) {
       throw new Error(`Failed to retrieve epic details for ID: ${epicId}`);
     }
 
-    console.log('📋 Epic details:', epicDetails);
-    addDebugMessage(`Epic details retrieved: ${JSON.stringify(epicDetails)}`);
-
     // Use webhook target date if epic doesn't have one
-    let effectiveTargetDate = epicDetails.fulfillBy; // Note: keeping fulfillBy for now, will update epic property extraction later
+    let effectiveTargetDate = epicDetails.fulfillBy;
     if (!effectiveTargetDate && webhookTargetDate) {
       effectiveTargetDate = new Date(webhookTargetDate);
-      console.log('📅 Using webhook target date:', effectiveTargetDate);
-      addDebugMessage(`Using webhook target date: ${effectiveTargetDate}`);
-    } else if (effectiveTargetDate) {
-      console.log('📅 Using epic target date:', effectiveTargetDate);
-      addDebugMessage(`Using epic target date: ${effectiveTargetDate}`);
-    } else {
-      console.log('⚠️ No target date found - dates will not be translated');
-      addDebugMessage('No target date found - dates will not be translated');
     }
 
     // Step 2: Get workflow pages filtered by workflow type
     const workflowPages = await getWorkflowPages(workflowType);
-    console.log(`Found ${workflowPages.length} workflow pages${workflowType ? ` for workflow type: ${workflowType}` : ''}`);
 
     // Step 3: Calculate date translation
     const dateTranslation = calculateDateTranslation(workflowPages, effectiveTargetDate);
 
     // Step 4: Copy pages to Stories database
     const copyResult = await copyPagesToStories(workflowPages, epicDetails, dateTranslation, workflowType, allEpics);
-
-    console.log(`Successfully copied ${copyResult.copiedPages.length} pages to Stories database`);
 
     // Return detailed result for cross-workflow dependency resolution
     return {
@@ -528,8 +498,6 @@ async function processMultipleWorkflows(workflowConfigs, targetDate) {
   // First pass: collect all epics and process workflows without resolving dependencies
   for (const config of workflowConfigs) {
     try {
-      console.log(`\n▶️ Processing workflow: ${config.name} (Epic: ${config.epicId})`);
-
       if (!config.epicId) {
         throw new Error(`No epic ID provided for workflow: ${config.name}`);
       }
@@ -582,7 +550,6 @@ async function processMultipleWorkflows(workflowConfigs, targetDate) {
 
 // Resolve dependencies by updating blocking/blocked by properties with correct page IDs
 async function resolveDependencies(templateToPageMap, workflowPages, workflowType) {
-  console.log(`🔗 Starting dependency resolution for workflow: ${workflowType}`);
 
   for (const workflowPage of workflowPages) {
     try {
@@ -600,7 +567,6 @@ async function resolveDependencies(templateToPageMap, workflowPages, workflowTyp
       for (const propName of blockingProps) {
         const prop = originalPage.properties[propName];
         if (prop?.relation && prop.relation.length > 0) {
-          console.log(`🔗 Found blocking property "${propName}" with ${prop.relation.length} relations`);
           blockingRelations = blockingRelations.concat(prop.relation);
         }
       }
@@ -609,7 +575,6 @@ async function resolveDependencies(templateToPageMap, workflowPages, workflowTyp
       for (const propName of blockedByProps) {
         const prop = originalPage.properties[propName];
         if (prop?.relation && prop.relation.length > 0) {
-          console.log(`🔗 Found blocked by property "${propName}" with ${prop.relation.length} relations`);
           blockedByRelations = blockedByRelations.concat(prop.relation);
         }
       }
@@ -647,9 +612,6 @@ async function resolveDependencies(templateToPageMap, workflowPages, workflowTyp
 
           if (relatedName && templateToPageMap[relatedName]) {
             resolvedBlockingIds.push({ id: templateToPageMap[relatedName] });
-            console.log(`🔗 Resolved blocking: ${templateName} → ${relatedName}`);
-          } else {
-            console.log(`⚠️ Could not resolve blocking relation for: ${relatedName || relation.id}`);
           }
         }
 
@@ -671,9 +633,6 @@ async function resolveDependencies(templateToPageMap, workflowPages, workflowTyp
 
           if (relatedName && templateToPageMap[relatedName]) {
             resolvedBlockedByIds.push({ id: templateToPageMap[relatedName] });
-            console.log(`🔗 Resolved blocked by: ${relatedName} → ${templateName}`);
-          } else {
-            console.log(`⚠️ Could not resolve blocked by relation for: ${relatedName || relation.id}`);
           }
         }
 
@@ -684,12 +643,12 @@ async function resolveDependencies(templateToPageMap, workflowPages, workflowTyp
 
       // Update the page with resolved dependencies
       if (Object.keys(updates).length > 0) {
-        console.log(`🔄 Updating dependencies for page ${newPageId}`);
+
         await notion.pages.update({
           page_id: newPageId,
           properties: updates
         });
-        console.log(`✅ Updated dependencies for: ${templateName}`);
+
       }
 
     } catch (error) {
@@ -703,8 +662,6 @@ async function resolveDependencies(templateToPageMap, workflowPages, workflowTyp
 
 // Resolve dependencies across all workflows
 async function resolveCrossWorkflowDependencies(allTemplateToPageMaps, allWorkflowPages) {
-  console.log(`🔗 Starting cross-workflow dependency resolution`);
-
   // Combine all workflow pages from different workflows
   const allPages = [];
   for (const workflowType in allWorkflowPages) {
@@ -713,7 +670,9 @@ async function resolveCrossWorkflowDependencies(allTemplateToPageMaps, allWorkfl
     }
   }
 
-  console.log(`🔗 Processing ${allPages.length} pages for cross-workflow dependencies`);
+  if (allPages.length > 0) {
+    console.log(`🔗 Resolving dependencies for ${allPages.length} pages`);
+  }
 
   for (const workflowPage of allPages) {
     try {
@@ -731,7 +690,6 @@ async function resolveCrossWorkflowDependencies(allTemplateToPageMaps, allWorkfl
       for (const propName of blockingProps) {
         const prop = originalPage.properties[propName];
         if (prop?.relation && prop.relation.length > 0) {
-          console.log(`🔗 Found blocking property "${propName}" with ${prop.relation.length} relations`);
           blockingRelations = blockingRelations.concat(prop.relation);
         }
       }
@@ -740,7 +698,6 @@ async function resolveCrossWorkflowDependencies(allTemplateToPageMaps, allWorkfl
       for (const propName of blockedByProps) {
         const prop = originalPage.properties[propName];
         if (prop?.relation && prop.relation.length > 0) {
-          console.log(`🔗 Found blocked by property "${propName}" with ${prop.relation.length} relations`);
           blockedByRelations = blockedByRelations.concat(prop.relation);
         }
       }
@@ -815,12 +772,12 @@ async function resolveCrossWorkflowDependencies(allTemplateToPageMaps, allWorkfl
 
       // Update the page with resolved dependencies
       if (Object.keys(updates).length > 0) {
-        console.log(`🔄 Updating cross-workflow dependencies for page ${newPageId}`);
+
         await notion.pages.update({
           page_id: newPageId,
           properties: updates
         });
-        console.log(`✅ Updated cross-workflow dependencies for: ${templateName}`);
+
       }
 
     } catch (error) {
@@ -844,11 +801,8 @@ async function copyPageContent(sourcePageId, destinationPageId) {
     });
 
     if (!blocksResponse.results || blocksResponse.results.length === 0) {
-      console.log(`📄 No content blocks found in source page`);
       return;
     }
-
-    console.log(`📄 Found ${blocksResponse.results.length} top-level blocks`);
 
     // Prepare blocks for appending (remove properties that can't be copied)
     const blocksToAppend = blocksResponse.results.map(block => {
@@ -862,8 +816,6 @@ async function copyPageContent(sourcePageId, destinationPageId) {
         block_id: destinationPageId,
         children: blocksToAppend
       });
-
-      console.log(`📄 Successfully appended ${blocksToAppend.length} blocks`);
 
       // Recursively copy child blocks for blocks that have children
       for (const block of blocksResponse.results) {
@@ -891,8 +843,6 @@ async function copyChildBlocks(sourceBlockId, destinationPageId, parentBlocks) {
       return;
     }
 
-    console.log(`📄 Copying ${childBlocksResponse.results.length} child blocks for block ${sourceBlockId}`);
-
     // Find the corresponding block in the destination page
     const destinationBlocksResponse = await notion.blocks.children.list({
       block_id: destinationPageId,
@@ -914,8 +864,6 @@ async function copyChildBlocks(sourceBlockId, destinationPageId, parentBlocks) {
           block_id: lastBlock.id,
           children: childBlocksToAppend
         });
-
-        console.log(`📄 Appended ${childBlocksToAppend.length} child blocks`);
       }
     }
 
@@ -928,28 +876,20 @@ async function copyChildBlocks(sourceBlockId, destinationPageId, parentBlocks) {
 // Calculate date translation to maintain relational distance
 function calculateDateTranslation(workflowPages, epicFulfillBy) {
   if (!epicFulfillBy || workflowPages.length === 0) {
-    console.log('📅 No fulfill by date or no workflow pages - no translation');
     return { offset: 0 };
   }
 
   // Find the latest date in workflow pages
   const pagesWithDates = workflowPages.filter(page => page.date);
-  console.log(`📅 Found ${pagesWithDates.length} workflow pages with dates out of ${workflowPages.length} total`);
 
   if (pagesWithDates.length === 0) {
-    console.log('📅 No workflow pages have dates - no translation');
     return { offset: 0 };
   }
 
   const latestWorkflowDate = pagesWithDates.reduce((latest, page) => page.date > latest ? page.date : latest, new Date(0));
-  console.log(`📅 Latest workflow date: ${latestWorkflowDate.toISOString().split('T')[0]}`);
-  console.log(`📅 Epic fulfill by date: ${epicFulfillBy.toISOString().split('T')[0]}`);
 
   // Calculate offset to align latest workflow date with epic fulfill by date
   const offset = epicFulfillBy.getTime() - latestWorkflowDate.getTime();
-  const offsetDays = Math.round(offset / (1000 * 60 * 60 * 24));
-
-  console.log(`📅 Date translation offset: ${offsetDays} days`);
 
   return { offset };
 }
@@ -1100,26 +1040,21 @@ async function copyPagesToStories(workflowPages, epicDetails, dateTranslation, w
 
             // Validate original date range
             if (startDate >= endDate) {
-              console.warn(`⚠️ Invalid original date range: ${originalDate.start} to ${originalDate.end}`);
-              // Skip date translation for invalid ranges
+              console.warn(`⚠️ Invalid date range skipped: ${originalDate.start}-${originalDate.end}`);
             } else {
-              const duration = endDate.getTime() - startDate.getTime(); // Preserve the duration
-
+              const duration = endDate.getTime() - startDate.getTime();
               newProperties.Date.date.start = translatedDate.toISOString().split('T')[0];
               const translatedEndDate = new Date(translatedDate.getTime() + duration);
 
-              // Ensure translated end date is after translated start date
               if (translatedEndDate <= translatedDate) {
-                console.warn(`⚠️ Translation would create invalid date range, using original dates`);
+                console.warn(`⚠️ Date translation skipped to prevent invalid range`);
               } else {
                 newProperties.Date.date.end = translatedEndDate.toISOString().split('T')[0];
-                console.log(`📅 Translated date range: ${originalDate.start} - ${originalDate.end} → ${newProperties.Date.date.start} - ${newProperties.Date.date.end}`);
               }
             }
           } else if (originalDate.start) {
             // Single date
             newProperties.Date.date.start = translatedDate.toISOString().split('T')[0];
-            console.log(`📅 Translated date: ${originalDate.start} → ${newProperties.Date.date.start}`);
           }
         } else {
           // No translation needed, but ensure dates are valid
@@ -1127,13 +1062,10 @@ async function copyPagesToStories(workflowPages, epicDetails, dateTranslation, w
             const startDate = new Date(originalDate.start);
             const endDate = new Date(originalDate.end);
 
-            // Check if the date range is valid
             if (startDate >= endDate) {
-              console.warn(`⚠️ Invalid date range detected: ${originalDate.start} to ${originalDate.end}`);
-              // For invalid ranges, we can either skip the date or keep original
-              // Let's skip the date property entirely to avoid API errors
+              console.warn(`⚠️ Invalid date range: ${originalDate.start}-${originalDate.end}`);
               if (isTargetDatePage) {
-                console.warn(`🎯 Target date page: removing invalid date property to prevent API error`);
+                console.warn(`🎯 Target page: date property removed`);
                 delete newProperties.Date;
               }
             }
@@ -1148,7 +1080,6 @@ async function copyPagesToStories(workflowPages, epicDetails, dateTranslation, w
           newProperties.Epic = {
             relation: allEpics.map(epic => ({ id: epic.id }))
           };
-          console.log(`🎯 Target date page: adding ${allEpics.length} epics`);
         } else {
           // Regular pages get the current epic
           newProperties.Epic = {
@@ -1166,55 +1097,41 @@ async function copyPagesToStories(workflowPages, epicDetails, dateTranslation, w
       // Copy icon from source page if it exists
       if (workflowPage.icon) {
         pageParams.icon = workflowPage.icon;
-        addDebugMessage(`Copying icon from source page: ${JSON.stringify(workflowPage.icon)}`);
-        console.log(`📎 Copying icon from source page:`, workflowPage.icon);
       }
 
       // Create new page in Stories database
       const newPage = await notion.pages.create(pageParams);
-
       copiedPages.push(newPage);
-      console.log(`Created page: ${newPage.id}`);
 
       // Copy page content (blocks) from template to new page
       try {
-        console.log(`📄 Copying page content from ${workflowPage.id} to ${newPage.id}`);
         await copyPageContent(workflowPage.id, newPage.id);
-        console.log(`✅ Page content copied successfully`);
       } catch (contentError) {
-        console.error(`⚠️ Failed to copy page content:`, contentError.message);
-        // Continue even if content copying fails
+        console.error(`⚠️ Content copy failed for ${workflowPage.id}: ${contentError.message}`);
       }
 
       // Mark target date page as copied
       if (isTargetDatePage) {
         targetDatePageCopied = true;
-        console.log(`✅ Target date page ${workflowPage.id} copied as ${newPage.id}`);
       }
 
       // Track the mapping from template page name to new page ID for dependency resolution
       if (originalTitle) {
         templateToPageMap[originalTitle] = newPage.id;
-        console.log(`📋 Mapped template "${originalTitle}" → page ${newPage.id}`);
       }
     } catch (error) {
       console.error(`Error copying page ${workflowPage.id}:`, error);
 
       // Special handling for target date page errors
       if (isTargetDatePage) {
-        console.error(`❌ CRITICAL: Target date page failed to copy:`, {
-          pageId: workflowPage.id,
-          pageName: workflowPage.properties?.Name?.title?.[0]?.plain_text || 'Unknown',
-          error: error.message,
-          properties: Object.keys(workflowPage.properties || {})
-        });
+        console.error(`❌ Target page failed: ${workflowPage.id} - ${error.message}`);
 
         // Try to copy target date page without date property if it's causing validation errors
         if (error.message && error.message.includes('date range')) {
-          console.log(`🎯 Attempting to copy target date page without date property...`);
+          console.log(`🎯 Retrying target page without date property...`);
           try {
             const retryProperties = { ...newProperties };
-            delete retryProperties.Date; // Remove the problematic date property
+            delete retryProperties.Date;
 
             const retryPageParams = {
               parent: { database_id: STORIES_DB_ID },
@@ -1226,15 +1143,16 @@ async function copyPagesToStories(workflowPages, epicDetails, dateTranslation, w
             }
 
             const retryNewPage = await notion.pages.create(retryPageParams);
-            console.log(`✅ Target date page copied successfully without date property: ${retryNewPage.id}`);
+            console.log(`✅ Target page copied: ${retryNewPage.id}`);
 
             copiedPages.push(retryNewPage);
-            templateToPageMap[originalTitle] = retryNewPage.id;
+            if (originalTitle) {
+              templateToPageMap[originalTitle] = retryNewPage.id;
+            }
             targetDatePageCopied = true;
-
-            return; // Successfully copied, exit the catch block
+            return;
           } catch (retryError) {
-            console.error(`❌ Retry also failed:`, retryError.message);
+            console.error(`❌ Target page retry failed: ${retryError.message}`);
           }
         }
       }
