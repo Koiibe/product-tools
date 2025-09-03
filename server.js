@@ -196,16 +196,31 @@ async function getEpicDetails(epicId) {
     // Try different property names for the epic name
     let epicName = 'Unnamed Epic'; // fallback
 
-    if (response.properties.Name?.title?.[0]?.plain_text) {
-      epicName = response.properties.Name.title[0].plain_text;
-      console.log(`Found epic name from Name.title: "${epicName}"`);
-    } else if (response.properties.Name?.rich_text?.[0]?.plain_text) {
-      epicName = response.properties.Name.rich_text[0].plain_text;
-      console.log(`Found epic name from Name.rich_text: "${epicName}"`);
-    } else if (response.properties.Title?.title?.[0]?.plain_text) {
-      epicName = response.properties.Title.title[0].plain_text;
-      console.log(`Found epic name from Title.title: "${epicName}"`);
-    } else {
+    // Check for common epic name property variations
+    const epicNameCandidates = [
+      'Name',           // Standard name property
+      'Epic Name',      // Custom epic name property
+      'Title',          // Title property
+      'Page'            // Page property
+    ];
+
+    for (const propName of epicNameCandidates) {
+      const prop = response.properties[propName];
+      if (prop) {
+        // Try different formats: title, rich_text
+        if (prop.title?.[0]?.plain_text) {
+          epicName = prop.title[0].plain_text;
+          console.log(`🎯 Found epic name from ${propName}.title: "${epicName}"`);
+          break;
+        } else if (prop.rich_text?.[0]?.plain_text) {
+          epicName = prop.rich_text[0].plain_text;
+          console.log(`🎯 Found epic name from ${propName}.rich_text: "${epicName}"`);
+          break;
+        }
+      }
+    }
+
+    if (epicName === 'Unnamed Epic') {
       console.log('Epic name not found, using fallback. Available properties:', Object.keys(response.properties));
     }
 
