@@ -41,30 +41,20 @@ app.post('/webhook/notion', async (req, res) => {
     console.log('Received webhook:', JSON.stringify(req.body, null, 2));
     console.log('Headers:', JSON.stringify(req.headers, null, 2));
 
-    // Extract epic ID, target date, and workflow type from webhook payload - try multiple formats
-    // Notion buttons can send data in various formats
-    let epicId = req.body.epicId;
+    // Extract multiple epic IDs, target date, and workflow types from webhook payload
+    // New format: single row with multi-select workflows and multiple epic relations
+    let epicId = req.body.epicId; // Fallback for backward compatibility
     let webhookTargetDate = req.body.targetDate || req.body.fulfillBy;
-    let workflowType = req.body.workflow;
+    let selectedWorkflows = req.body.workflows || req.body.Workflows || [];
 
-    // FIRST: Check if the triggering page has epic relation, workflow type, and target date in its properties
-    if (!epicId && req.body.data?.properties) {
+    // Extract epic relations for each workflow type
+    let batchEpicId = req.body.batchEpic || req.body['Batch Epic'];
+    let skuEpicId = req.body.skuEpic || req.body['SKU Epic'];
+    let marketEpicId = req.body.marketEpic || req.body['Market Epic'];
+
+    // FIRST: Extract data from triggering page properties (new format)
+    if (req.body.data?.properties) {
       const generatorProps = req.body.data.properties;
-
-      // Check for "Assign to Epic" relation property
-      const epicRelation = generatorProps['Assign to Epic'] ||
-                          generatorProps['Epic'] ||
-                          generatorProps['Parent Epic'] ||
-                          generatorProps['📚 Epics All Teams'] ||
-                          generatorProps['Related Epic'];
-
-      if (epicRelation?.relation?.[0]?.id) {
-        epicId = epicRelation.relation[0].id;
-        console.log('🎯 Found epic ID in Assign to Epic relation:', epicId);
-      } else if (epicRelation?.rollup?.[0]?.relation?.[0]?.id) {
-        epicId = epicRelation.rollup[0].relation[0].id;
-        console.log('🎯 Found epic ID in rollup relation:', epicId);
-      }
 
       // Extract target date from triggering page properties if not in webhook
       if (!webhookTargetDate) {
@@ -82,18 +72,52 @@ app.post('/webhook/notion', async (req, res) => {
         }
       }
 
-      // Extract workflow type from triggering page properties if not in webhook
-      if (!workflowType) {
-        const workflowProp = generatorProps['Workflow'] ||
-                            generatorProps['Workflow Type'] ||
-                            generatorProps['Type'];
+      // Extract selected workflows from multi-select property
+      if (!selectedWorkflows.length) {
+        const workflowsProp = generatorProps['Workflows'] ||
+                             generatorProps['workflows'] ||
+                             generatorProps['Workflow'];
 
-        if (workflowProp?.relation?.[0]?.id) {
-          workflowType = workflowProp.relation[0].id;
-          console.log('🔄 Found workflow type in relation:', workflowType);
-        } else if (workflowProp?.select?.name) {
-          workflowType = workflowProp.select.name;
-          console.log('🔄 Found workflow type in select:', workflowType);
+        if (workflowsProp?.multi_select) {
+          selectedWorkflows = workflowsProp.multi_select.map(item => item.name);
+          console.log('🔄 Found selected workflows:', selectedWorkflows);
+        } else if (workflowsProp?.select?.name) {
+          selectedWorkflows = [workflowsProp.select.name];
+          console.log('🔄 Found single workflow:', selectedWorkflows);
+        }
+      }
+
+      // Extract epic relations for each workflow type
+      if (!batchEpicId) {
+        const batchEpicProp = generatorProps['Batch Epic'] ||
+                             generatorProps['batchEpic'] ||
+                             generatorProps['Batch'];
+
+        if (batchEpicProp?.relation?.[0]?.id) {
+          batchEpicId = batchEpicProp.relation[0].id;
+          console.log('🎯 Found Batch Epic ID:', batchEpicId);
+        }
+      }
+
+      if (!skuEpicId) {
+        const skuEpicProp = generatorProps['SKU Epic'] ||
+                           generatorProps['skuEpic'] ||
+                           generatorProps['SKU'];
+
+        if (skuEpicProp?.relation?.[0]?.id) {
+          skuEpicId = skuEpicProp.relation[0].id;
+          console.log('🎯 Found SKU Epic ID:', skuEpicId);
+        }
+      }
+
+      if (!marketEpicId) {
+        const marketEpicProp = generatorProps['Market Epic'] ||
+                              generatorProps['marketEpic'] ||
+                              generatorProps['Market'];
+
+        if (marketEpicProp?.relation?.[0]?.id) {
+          marketEpicId = marketEpicProp.relation[0].id;
+          console.log('🎯 Found Market Epic ID:', marketEpicId);
         }
       }
     }
@@ -115,21 +139,59 @@ app.post('/webhook/notion', async (req, res) => {
       console.log('📄 Using triggering page ID as epic ID:', epicId);
     }
 
-    console.log('🎯 Final extracted epicId:', epicId);
-    console.log('📅 Webhook target date:', webhookTargetDate);
-    console.log('🔄 Workflow type:', workflowType);
+    console.log('🎯 Extracted data:');
+    console.log('  - Selected workflows:', selectedWorkflows);
+    console.log('  - Target date:', webhookTargetDate);
+    console.log('  - Batch Epic:', batchEpicId);
+    console.log('  - SKU Epic:', skuEpicId);
+    console.log('  - Market Epic:', marketEpicId);
 
-    if (!epicId) {
-      console.log('No epic ID found in payload');
+    // Validate that selected workflows have corresponding epic relations
+    const workflowEpicMap = {
+      'New batch': batchEpicId,
+      'Batch': batchEpicId,
+      'batch': batchEpicId,
+      'New SKU': skuEpicId,
+      'SKU': skuEpicId,
+      'sku': skuEpicId,
+      'New Market': marketEpicId,
+      'Market': marketEpicId,
+      'market': marketEpicId
+    };
+
+    const missingEpics = [];
+    selectedWorkflows.forEach(workflow => {
+      if (!workflowEpicMap[workflow]) {
+        missingEpics.push(workflow);
+      }
+    });
+
+    if (missingEpics.length > 0) {
+      console.log('❌ Missing epic relations for workflows:', missingEpics);
       return res.status(400).json({
-        error: 'No epic ID provided in webhook. Please ensure the "Assign to Epic" property is set.',
+        error: `Missing epic relations for selected workflows: ${missingEpics.join(', ')}`,
         receivedPayload: req.body,
-        suggestion: 'Set the "Assign to Epic" relation property to the target epic'
+        suggestion: 'Please set the corresponding epic relation properties for the selected workflows'
       });
     }
 
-    // Process the workflow copying with target date and workflow type
-    await processWorkflowCopy(epicId, webhookTargetDate, workflowType);
+    if (selectedWorkflows.length === 0) {
+      console.log('❌ No workflows selected');
+      return res.status(400).json({
+        error: 'No workflows selected. Please select at least one workflow.',
+        receivedPayload: req.body,
+        suggestion: 'Select workflows using the "Workflows" multi-select property'
+      });
+    }
+
+    // Process multiple workflows
+    const workflowConfigs = selectedWorkflows.map(workflow => ({
+      type: workflow,
+      epicId: workflowEpicMap[workflow],
+      name: workflow
+    }));
+
+    await processMultipleWorkflows(workflowConfigs, webhookTargetDate);
 
     res.status(200).json({ message: 'Workflow processing completed successfully' });
   } catch (error) {
@@ -316,12 +378,12 @@ async function getWorkflowPages(workflowType = null) {
       ],
     };
 
-    // If workflow type is specified, filter by workflow relation
+    // If workflow type is specified, filter by workflow select property (not relation)
     if (workflowType) {
       queryParams.filter = {
         property: 'Workflow',
-        relation: {
-          contains: workflowType
+        select: {
+          equals: workflowType
         }
       };
       console.log(`🔄 Filtering workflow pages by workflow type: ${workflowType}`);
@@ -339,6 +401,29 @@ async function getWorkflowPages(workflowType = null) {
     console.error('Error getting workflow pages:', error);
     throw new Error(`Failed to get workflow pages: ${error.message}`);
   }
+}
+
+// Process multiple workflows sequentially
+async function processMultipleWorkflows(workflowConfigs, targetDate) {
+  console.log(`🚀 Processing ${workflowConfigs.length} workflows`);
+
+  const results = [];
+  for (const config of workflowConfigs) {
+    try {
+      console.log(`\n▶️ Processing workflow: ${config.name} (Epic: ${config.epicId})`);
+      const result = await processWorkflowCopy(config.epicId, targetDate, config.type);
+      results.push({ workflow: config.name, success: true, pagesCopied: result });
+    } catch (error) {
+      console.error(`❌ Failed to process workflow ${config.name}:`, error);
+      results.push({ workflow: config.name, success: false, error: error.message });
+    }
+  }
+
+  const successful = results.filter(r => r.success).length;
+  const total = results.length;
+  console.log(`\n📊 Completed: ${successful}/${total} workflows successful`);
+
+  return results;
 }
 
 // Calculate date translation to maintain relational distance
