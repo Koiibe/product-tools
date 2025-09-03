@@ -134,10 +134,13 @@ app.get('/test-epic/:epicId', async (req, res) => {
 async function processWorkflowCopy(epicId) {
   try {
     console.log(`Processing workflow copy for epic: ${epicId}`);
+    addDebugMessage(`Starting workflow copy for epic: ${epicId}`);
 
     // Step 1: Get epic details
+    addDebugMessage(`Retrieving epic details for ID: ${epicId}`);
     const epicDetails = await getEpicDetails(epicId);
     console.log('Epic details:', epicDetails);
+    addDebugMessage(`Epic details retrieved: ${JSON.stringify(epicDetails)}`);
 
     // Step 2: Get all pages from Product Workflows database
     const workflowPages = await getWorkflowPages();
