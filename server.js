@@ -21,6 +21,11 @@ const notion = new Client({
 const PRODUCT_WORKFLOWS_DB_ID = '263ce8f7317a804dad72cac4e8a5aa60';
 const STORIES_DB_ID = '1c1ce8f7317a80dfafc4d95c8cb67c3e';
 
+// Target template pages - the specific pages we want to copy
+const TARGET_TEMPLATE_PAGES = [
+  '263ce8f7317a80c4afa2fb66c2461e19'  // New target date page with all three epics
+];
+
 // Store recent debug messages
 let debugMessages = [];
 const MAX_DEBUG_MESSAGES = 50;
@@ -276,7 +281,7 @@ app.get('/test-epic/:epicId', async (req, res) => {
 });
 
 // Main processing function
-async function processWorkflowCopy(epicId, webhookTargetDate = null, workflowType = null) {
+async function processWorkflowCopy(epicId, webhookTargetDate = null, workflowType = null, allEpics = []) {
   try {
     console.log(`⚙️ Processing workflow copy for epic: ${epicId} (${workflowType || 'default'})`);
     addDebugMessage(`Starting workflow copy for epic: ${epicId}`);
@@ -320,17 +325,16 @@ async function processWorkflowCopy(epicId, webhookTargetDate = null, workflowTyp
     const dateTranslation = calculateDateTranslation(workflowPages, effectiveTargetDate);
 
     // Step 4: Copy pages to Stories database
-    const copyResult = await copyPagesToStories(workflowPages, epicDetails, dateTranslation);
+    const copyResult = await copyPagesToStories(workflowPages, epicDetails, dateTranslation, workflowType, allEpics);
 
     console.log(`Successfully copied ${copyResult.copiedPages.length} pages to Stories database`);
 
-    // Step 5: Resolve dependencies in second pass
-    if (copyResult.templateToPageMap && Object.keys(copyResult.templateToPageMap).length > 0) {
-      console.log(`🔗 Resolving dependencies for ${Object.keys(copyResult.templateToPageMap).length} pages`);
-      await resolveDependencies(copyResult.templateToPageMap, workflowPages, workflowType);
-    }
-
-    return copyResult.copiedPages.length;
+    // Return detailed result for cross-workflow dependency resolution
+    return {
+      copiedPages: copyResult.copiedPages.length,
+      templateToPageMap: copyResult.templateToPageMap,
+      workflowPages: workflowPages
+    };
   } catch (error) {
     console.error('Error in processWorkflowCopy:', error);
     throw error;
@@ -437,6 +441,7 @@ async function getEpicDetails(epicId) {
 // Get all pages from Product Workflows database
 async function getWorkflowPages(workflowType = null) {
   try {
+    // First, get all pages from the database to find relevant ones
     const queryParams = {
       database_id: PRODUCT_WORKFLOWS_DB_ID,
       sorts: [
@@ -460,12 +465,40 @@ async function getWorkflowPages(workflowType = null) {
 
     const response = await notion.databases.query(queryParams);
 
-    return response.results.map(page => ({
+    let workflowPages = response.results.map(page => ({
       id: page.id,
       properties: page.properties,
       date: page.properties.Date?.date?.start ? new Date(page.properties.Date.date.start) : null,
       icon: page.icon, // Include icon information for copying
     }));
+
+    // If workflow type is specified, also include the target template pages that might not have been captured by the filter
+    if (workflowType && TARGET_TEMPLATE_PAGES.length > 0) {
+      console.log('🔍 Checking for additional target template pages...');
+
+      for (const targetPageId of TARGET_TEMPLATE_PAGES) {
+        try {
+          const targetPage = await notion.pages.retrieve({ page_id: targetPageId });
+          console.log(`📄 Retrieved target page: ${targetPageId}`);
+
+          // Check if this page is already in our results
+          const alreadyExists = workflowPages.some(page => page.id === targetPageId);
+          if (!alreadyExists) {
+            workflowPages.push({
+              id: targetPage.id,
+              properties: targetPage.properties,
+              date: targetPage.properties.Date?.date?.start ? new Date(targetPage.properties.Date.date.start) : null,
+              icon: targetPage.icon,
+            });
+            console.log(`➕ Added target page ${targetPageId} to workflow pages`);
+          }
+        } catch (error) {
+          console.error(`⚠️ Could not retrieve target page ${targetPageId}:`, error.message);
+        }
+      }
+    }
+
+    return workflowPages;
   } catch (error) {
     console.error('❌ Error getting workflow pages:', error.message);
     console.error('Error details:', error);
@@ -488,6 +521,11 @@ async function processMultipleWorkflows(workflowConfigs, targetDate) {
   console.log(`🚀 Processing ${workflowConfigs.length} workflows`);
 
   const results = [];
+  const allEpics = []; // Collect all epics for target date page
+  const allTemplateToPageMaps = {}; // Collect all template mappings for dependency resolution
+  const allWorkflowPages = {}; // Collect all workflow pages for dependency resolution
+
+  // First pass: collect all epics and process workflows without resolving dependencies
   for (const config of workflowConfigs) {
     try {
       console.log(`\n▶️ Processing workflow: ${config.name} (Epic: ${config.epicId})`);
@@ -496,13 +534,28 @@ async function processMultipleWorkflows(workflowConfigs, targetDate) {
         throw new Error(`No epic ID provided for workflow: ${config.name}`);
       }
 
-      const result = await processWorkflowCopy(config.epicId, targetDate, config.type);
+      // Get epic details and add to all epics collection
+      const epicDetails = await getEpicDetails(config.epicId);
+      allEpics.push({ id: config.epicId, name: epicDetails.name });
+
+      const result = await processWorkflowCopy(config.epicId, targetDate, config.type, allEpics);
       results.push({
         workflow: config.name,
         success: true,
-        pagesCopied: result || 0,
+        pagesCopied: result.pagesCopied || 0,
+        templateToPageMap: result.templateToPageMap,
+        workflowPages: result.workflowPages,
         epicId: config.epicId
       });
+
+      // Collect template mappings and workflow pages for dependency resolution
+      if (result.templateToPageMap) {
+        Object.assign(allTemplateToPageMaps, result.templateToPageMap);
+      }
+      if (result.workflowPages) {
+        allWorkflowPages[config.type] = result.workflowPages;
+      }
+
     } catch (error) {
       console.error(`❌ Failed to process workflow ${config.name}:`, error.message);
       results.push({
@@ -512,6 +565,12 @@ async function processMultipleWorkflows(workflowConfigs, targetDate) {
         epicId: config.epicId
       });
     }
+  }
+
+  // Second pass: Resolve dependencies across all workflows
+  if (Object.keys(allTemplateToPageMaps).length > 0) {
+    console.log(`\n🔗 Resolving cross-workflow dependencies for ${Object.keys(allTemplateToPageMaps).length} pages`);
+    await resolveCrossWorkflowDependencies(allTemplateToPageMaps, allWorkflowPages);
   }
 
   const successful = results.filter(r => r.success).length;
@@ -642,6 +701,242 @@ async function resolveDependencies(templateToPageMap, workflowPages, workflowTyp
   console.log(`🔗 Completed dependency resolution for workflow: ${workflowType}`);
 }
 
+// Resolve dependencies across all workflows
+async function resolveCrossWorkflowDependencies(allTemplateToPageMaps, allWorkflowPages) {
+  console.log(`🔗 Starting cross-workflow dependency resolution`);
+
+  // Combine all workflow pages from different workflows
+  const allPages = [];
+  for (const workflowType in allWorkflowPages) {
+    if (allWorkflowPages[workflowType]) {
+      allPages.push(...allWorkflowPages[workflowType]);
+    }
+  }
+
+  console.log(`🔗 Processing ${allPages.length} pages for cross-workflow dependencies`);
+
+  for (const workflowPage of allPages) {
+    try {
+      // Get the original template page to check for dependency properties
+      const originalPage = await notion.pages.retrieve({ page_id: workflowPage.id });
+
+      // Check for dependency properties
+      const blockingProps = ['Blocking', 'Blocks', 'Blocking by'];
+      const blockedByProps = ['Blocked by', 'Blocked', 'Blocked_by'];
+
+      let blockingRelations = [];
+      let blockedByRelations = [];
+
+      // Extract blocking dependencies
+      for (const propName of blockingProps) {
+        const prop = originalPage.properties[propName];
+        if (prop?.relation && prop.relation.length > 0) {
+          console.log(`🔗 Found blocking property "${propName}" with ${prop.relation.length} relations`);
+          blockingRelations = blockingRelations.concat(prop.relation);
+        }
+      }
+
+      // Extract blocked by dependencies
+      for (const propName of blockedByProps) {
+        const prop = originalPage.properties[propName];
+        if (prop?.relation && prop.relation.length > 0) {
+          console.log(`🔗 Found blocked by property "${propName}" with ${prop.relation.length} relations`);
+          blockedByRelations = blockedByRelations.concat(prop.relation);
+        }
+      }
+
+      // If no dependencies found, skip this page
+      if (blockingRelations.length === 0 && blockedByRelations.length === 0) {
+        continue;
+      }
+
+      // Get the new page ID for this template
+      const templateName = workflowPage.properties.Name?.title?.[0]?.plain_text ||
+                          workflowPage.properties.Name?.rich_text?.[0]?.plain_text ||
+                          workflowPage.properties.Title?.title?.[0]?.plain_text;
+
+      if (!templateName || !allTemplateToPageMaps[templateName]) {
+        console.log(`⚠️ Could not find mapping for template: ${templateName}`);
+        continue;
+      }
+
+      const newPageId = allTemplateToPageMaps[templateName];
+
+      // Prepare updates for blocking and blocked by properties
+      const updates = {};
+
+      // Resolve blocking relations (this page blocks other pages)
+      if (blockingRelations.length > 0) {
+        const resolvedBlockingIds = [];
+
+        for (const relation of blockingRelations) {
+          // Try to find the related page in our template mapping
+          const relatedPage = await notion.pages.retrieve({ page_id: relation.id });
+          const relatedName = relatedPage.properties.Name?.title?.[0]?.plain_text ||
+                             relatedPage.properties.Name?.rich_text?.[0]?.plain_text ||
+                             relatedPage.properties.Title?.title?.[0]?.plain_text;
+
+          if (relatedName && allTemplateToPageMaps[relatedName]) {
+            resolvedBlockingIds.push({ id: allTemplateToPageMaps[relatedName] });
+            console.log(`🔗 Resolved blocking: ${templateName} → ${relatedName}`);
+          } else {
+            console.log(`⚠️ Could not resolve blocking relation for: ${relatedName || relation.id}`);
+          }
+        }
+
+        if (resolvedBlockingIds.length > 0) {
+          updates.Blocking = { relation: resolvedBlockingIds };
+        }
+      }
+
+      // Resolve blocked by relations (other pages block this page)
+      if (blockedByRelations.length > 0) {
+        const resolvedBlockedByIds = [];
+
+        for (const relation of blockedByRelations) {
+          // Try to find the related page in our template mapping
+          const relatedPage = await notion.pages.retrieve({ page_id: relation.id });
+          const relatedName = relatedPage.properties.Name?.title?.[0]?.plain_text ||
+                             relatedPage.properties.Name?.rich_text?.[0]?.plain_text ||
+                             relatedPage.properties.Title?.title?.[0]?.plain_text;
+
+          if (relatedName && allTemplateToPageMaps[relatedName]) {
+            resolvedBlockedByIds.push({ id: allTemplateToPageMaps[relatedName] });
+            console.log(`🔗 Resolved blocked by: ${relatedName} → ${templateName}`);
+          } else {
+            console.log(`⚠️ Could not resolve blocked by relation for: ${relatedName || relation.id}`);
+          }
+        }
+
+        if (resolvedBlockedByIds.length > 0) {
+          updates['Blocked by'] = { relation: resolvedBlockedByIds };
+        }
+      }
+
+      // Update the page with resolved dependencies
+      if (Object.keys(updates).length > 0) {
+        console.log(`🔄 Updating cross-workflow dependencies for page ${newPageId}`);
+        await notion.pages.update({
+          page_id: newPageId,
+          properties: updates
+        });
+        console.log(`✅ Updated cross-workflow dependencies for: ${templateName}`);
+      }
+
+    } catch (error) {
+      console.error(`❌ Error resolving cross-workflow dependencies for page ${workflowPage.id}:`, error.message);
+      // Continue with other pages even if one fails
+    }
+  }
+
+  console.log(`🔗 Completed cross-workflow dependency resolution`);
+}
+
+// Copy page content (blocks) from source page to destination page
+async function copyPageContent(sourcePageId, destinationPageId) {
+  try {
+    console.log(`📄 Getting blocks from source page: ${sourcePageId}`);
+
+    // Get all blocks from the source page
+    const blocksResponse = await notion.blocks.children.list({
+      block_id: sourcePageId,
+      page_size: 100
+    });
+
+    if (!blocksResponse.results || blocksResponse.results.length === 0) {
+      console.log(`📄 No content blocks found in source page`);
+      return;
+    }
+
+    console.log(`📄 Found ${blocksResponse.results.length} top-level blocks`);
+
+    // Prepare blocks for appending (remove properties that can't be copied)
+    const blocksToAppend = blocksResponse.results.map(block => {
+      const { id, created_time, last_edited_time, created_by, last_edited_by, ...cleanBlock } = block;
+
+      // Ensure Google Drive files and other file embeds are preserved
+      if (block.type === 'file' || block.type === 'embed') {
+        console.log(`📎 Found ${block.type} block: ${block[block.type]?.file?.name || block[block.type]?.url || 'unnamed'}`);
+      }
+
+      return cleanBlock;
+    });
+
+    if (blocksToAppend.length > 0) {
+      // Append blocks to the destination page
+      await notion.blocks.children.append({
+        block_id: destinationPageId,
+        children: blocksToAppend
+      });
+
+      console.log(`📄 Successfully appended ${blocksToAppend.length} blocks`);
+
+      // Recursively copy child blocks for blocks that have children
+      for (const block of blocksResponse.results) {
+        if (block.has_children && block.id) {
+          await copyChildBlocks(block.id, destinationPageId, blocksToAppend);
+        }
+      }
+    }
+
+  } catch (error) {
+    console.error(`❌ Error copying page content:`, error.message);
+    throw error;
+  }
+}
+
+// Recursively copy child blocks
+async function copyChildBlocks(sourceBlockId, destinationPageId, parentBlocks) {
+  try {
+    const childBlocksResponse = await notion.blocks.children.list({
+      block_id: sourceBlockId,
+      page_size: 100
+    });
+
+    if (!childBlocksResponse.results || childBlocksResponse.results.length === 0) {
+      return;
+    }
+
+    console.log(`📄 Copying ${childBlocksResponse.results.length} child blocks for block ${sourceBlockId}`);
+
+    // Find the corresponding block in the destination page
+    const destinationBlocksResponse = await notion.blocks.children.list({
+      block_id: destinationPageId,
+      page_size: 100
+    });
+
+    // For simplicity, we'll append child blocks to the last block of the same type
+    // This is a simplified approach - in a production system you'd want to match blocks more precisely
+    if (destinationBlocksResponse.results && destinationBlocksResponse.results.length > 0) {
+      const lastBlock = destinationBlocksResponse.results[destinationBlocksResponse.results.length - 1];
+
+      if (lastBlock.has_children || lastBlock.type === 'column_list' || lastBlock.type === 'column') {
+        const childBlocksToAppend = childBlocksResponse.results.map(block => {
+          const { id, created_time, last_edited_time, created_by, last_edited_by, ...cleanBlock } = block;
+
+          // Ensure Google Drive files and other file embeds are preserved in child blocks
+          if (block.type === 'file' || block.type === 'embed') {
+            console.log(`📎 Found child ${block.type} block: ${block[block.type]?.file?.name || block[block.type]?.url || 'unnamed'}`);
+          }
+
+          return cleanBlock;
+        });
+
+        await notion.blocks.children.append({
+          block_id: lastBlock.id,
+          children: childBlocksToAppend
+        });
+
+        console.log(`📄 Appended ${childBlocksToAppend.length} child blocks`);
+      }
+    }
+
+  } catch (error) {
+    console.error(`❌ Error copying child blocks:`, error.message);
+    // Continue even if child block copying fails
+  }
+}
+
 // Calculate date translation to maintain relational distance
 function calculateDateTranslation(workflowPages, epicFulfillBy) {
   if (!epicFulfillBy || workflowPages.length === 0) {
@@ -720,9 +1015,10 @@ function cleanPropertiesForAPI(properties, allowedProperties = []) {
 }
 
 // Copy pages to Stories database with translations
-async function copyPagesToStories(workflowPages, epicDetails, dateTranslation) {
+async function copyPagesToStories(workflowPages, epicDetails, dateTranslation, workflowType = null, allEpics = []) {
   const copiedPages = [];
   const templateToPageMap = {}; // Map template page names to new page IDs
+  let targetDatePageCopied = false; // Track if target date page has been copied
 
   // Get Stories database schema to know which properties are allowed
   console.log('Getting Stories database schema...');
@@ -731,6 +1027,13 @@ async function copyPagesToStories(workflowPages, epicDetails, dateTranslation) {
 
   for (const workflowPage of workflowPages) {
     try {
+      // Special handling for target date page - only copy once
+      const isTargetDatePage = TARGET_TEMPLATE_PAGES.includes(workflowPage.id);
+      if (isTargetDatePage && targetDatePageCopied) {
+        console.log(`⏭️ Skipping target date page ${workflowPage.id} - already copied`);
+        continue;
+      }
+
       // Prepare new page properties and clean them for API
       // Keep the Name property for title mapping, even if it's not in target schema
       const rawProperties = { ...workflowPage.properties };
@@ -800,11 +1103,20 @@ async function copyPagesToStories(workflowPages, epicDetails, dateTranslation) {
         newProperties.Date.date.start = translatedDate.toISOString().split('T')[0];
       }
 
-      // Add relation to original epic
+      // Add relation to epic(s) - use all epics for target date page
       if (!newProperties.Epic) {
-        newProperties.Epic = {
-          relation: [{ id: epicDetails.id }]
-        };
+        if (isTargetDatePage && allEpics.length > 0) {
+          // Target date page gets all epics
+          newProperties.Epic = {
+            relation: allEpics.map(epic => ({ id: epic.id }))
+          };
+          console.log(`🎯 Target date page: adding ${allEpics.length} epics`);
+        } else {
+          // Regular pages get the current epic
+          newProperties.Epic = {
+            relation: [{ id: epicDetails.id }]
+          };
+        }
       }
 
       // Prepare page creation parameters
@@ -825,6 +1137,22 @@ async function copyPagesToStories(workflowPages, epicDetails, dateTranslation) {
 
       copiedPages.push(newPage);
       console.log(`Created page: ${newPage.id}`);
+
+      // Copy page content (blocks) from template to new page
+      try {
+        console.log(`📄 Copying page content from ${workflowPage.id} to ${newPage.id}`);
+        await copyPageContent(workflowPage.id, newPage.id);
+        console.log(`✅ Page content copied successfully`);
+      } catch (contentError) {
+        console.error(`⚠️ Failed to copy page content:`, contentError.message);
+        // Continue even if content copying fails
+      }
+
+      // Mark target date page as copied
+      if (isTargetDatePage) {
+        targetDatePageCopied = true;
+        console.log(`✅ Target date page ${workflowPage.id} copied as ${newPage.id}`);
+      }
 
       // Track the mapping from template page name to new page ID for dependency resolution
       if (originalTitle) {
