@@ -108,6 +108,28 @@ app.get('/debug', (req, res) => {
   });
 });
 
+// Test epic retrieval endpoint
+app.get('/test-epic/:epicId', async (req, res) => {
+  try {
+    const epicId = req.params.epicId;
+    console.log(`Testing epic retrieval for ID: ${epicId}`);
+
+    const epicDetails = await getEpicDetails(epicId);
+    res.json({
+      success: true,
+      epicDetails: epicDetails,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('Test epic retrieval error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message,
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
 // Main processing function
 async function processWorkflowCopy(epicId) {
   try {
