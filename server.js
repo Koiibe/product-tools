@@ -282,8 +282,9 @@ async function copyPagesToStories(workflowPages, epicDetails, dateTranslation) {
       if (originalTitle) {
         newProperties.Title = {
           title: [{
-            plain_text: `${epicDetails.name}: ${originalTitle}`,
-            type: 'text'
+            text: {
+              content: `${epicDetails.name}: ${originalTitle}`
+            }
           }]
         };
         addDebugMessage(`Created Title property: "${epicDetails.name}: ${originalTitle}"`);
@@ -292,8 +293,9 @@ async function copyPagesToStories(workflowPages, epicDetails, dateTranslation) {
         // Fallback: create a generic title if no name was found
         newProperties.Title = {
           title: [{
-            plain_text: `${epicDetails.name}: Workflow Task`,
-            type: 'text'
+            text: {
+              content: `${epicDetails.name}: Workflow Task`
+            }
           }]
         };
         addDebugMessage(`Created fallback Title property: "${epicDetails.name}: Workflow Task"`);
