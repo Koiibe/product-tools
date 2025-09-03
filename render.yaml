@@ -1,11 +1,9 @@
 services:
   - type: web
     name: product-tools-render-server
-    runtime: node
+    env: node
     buildCommand: npm install
     startCommand: npm start
     envVars:
       - key: NODE_ENV
         value: production
-      - key: PORT
-        value: 10000
