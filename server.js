@@ -186,16 +186,16 @@ async function getDatabaseSchema(databaseId) {
 // Clean properties for Notion API and filter for target database schema
 function cleanPropertiesForAPI(properties, allowedProperties = []) {
   const cleanedProperties = {};
-  
+
   for (const [key, value] of Object.entries(properties)) {
     if (!value) continue;
-    
-    // Skip properties that don't exist in target database
-    if (allowedProperties.length > 0 && !allowedProperties.includes(key)) {
+
+    // Skip properties that don't exist in target database (but allow Title since we create it)
+    if (allowedProperties.length > 0 && !allowedProperties.includes(key) && key !== 'Title') {
       console.log(`Skipping property '${key}' - not found in target database schema`);
       continue;
     }
-    
+
     // Handle people properties - clean user objects to only include ID
     if (value.people && Array.isArray(value.people)) {
       cleanedProperties[key] = {
@@ -209,7 +209,7 @@ function cleanPropertiesForAPI(properties, allowedProperties = []) {
       cleanedProperties[key] = value;
     }
   }
-  
+
   return cleanedProperties;
 }
 
@@ -227,12 +227,21 @@ async function copyPagesToStories(workflowPages, epicDetails, dateTranslation) {
       // Prepare new page properties and clean them for API
       const newProperties = cleanPropertiesForAPI({ ...workflowPage.properties }, storiesSchema);
 
-      // Add epic name as prefix to title
+      // Handle title mapping - source has 'Name', target has 'Title'
+      let originalTitle = '';
       if (newProperties.Name && newProperties.Name.title) {
-        const originalTitle = newProperties.Name.title[0]?.plain_text || '';
-        newProperties.Name.title[0] = {
-          ...newProperties.Name.title[0],
-          plain_text: `${epicDetails.name}: ${originalTitle}`,
+        originalTitle = newProperties.Name.title[0]?.plain_text || '';
+        // Remove the Name property since target doesn't have it
+        delete newProperties.Name;
+      }
+
+      // Create Title property with epic prefix
+      if (originalTitle) {
+        newProperties.Title = {
+          title: [{
+            plain_text: `${epicDetails.name}: ${originalTitle}`,
+            type: 'text'
+          }]
         };
       }
 
