@@ -32,7 +32,8 @@ app.post('/webhook/notion', async (req, res) => {
     let epicId = req.body.epicId || 
                  req.body.page?.id || 
                  req.body.pageId ||
-                 req.body.id;
+                 req.body.id ||
+                 req.body.data?.id;  // Notion automation sends page ID here
     
     // If no direct ID, check if it's in the properties or context
     if (!epicId && req.body.context?.pageId) {
@@ -42,6 +43,11 @@ app.post('/webhook/notion', async (req, res) => {
     // Check for page ID in automation context
     if (!epicId && req.body.automationContext?.pageId) {
       epicId = req.body.automationContext.pageId;
+    }
+    
+    // Check headers for epic ID (in case it's sent there)
+    if (!epicId && req.headers.epicid && req.headers.epicid !== '{{page.id}}') {
+      epicId = req.headers.epicid;
     }
     
     console.log('Extracted epicId:', epicId);
