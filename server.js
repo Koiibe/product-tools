@@ -214,8 +214,8 @@ function cleanPropertiesForAPI(properties, allowedProperties = []) {
   for (const [key, value] of Object.entries(properties)) {
     if (!value) continue;
 
-    // Skip properties that don't exist in target database (but allow Title since we create it)
-    if (allowedProperties.length > 0 && !allowedProperties.includes(key) && key !== 'Title') {
+    // Skip properties that don't exist in target database (but allow Title and Name for mapping)
+    if (allowedProperties.length > 0 && !allowedProperties.includes(key) && key !== 'Title' && key !== 'Name') {
       console.log(`Skipping property '${key}' - not found in target database schema`);
       continue;
     }
@@ -249,7 +249,9 @@ async function copyPagesToStories(workflowPages, epicDetails, dateTranslation) {
   for (const workflowPage of workflowPages) {
     try {
       // Prepare new page properties and clean them for API
-      const newProperties = cleanPropertiesForAPI({ ...workflowPage.properties }, storiesSchema);
+      // Keep the Name property for title mapping, even if it's not in target schema
+      const rawProperties = { ...workflowPage.properties };
+      const newProperties = cleanPropertiesForAPI(rawProperties, storiesSchema);
 
       // Handle title mapping - source has 'Name', target has 'Title'
       let originalTitle = '';
