@@ -853,12 +853,6 @@ async function copyPageContent(sourcePageId, destinationPageId) {
     // Prepare blocks for appending (remove properties that can't be copied)
     const blocksToAppend = blocksResponse.results.map(block => {
       const { id, created_time, last_edited_time, created_by, last_edited_by, ...cleanBlock } = block;
-
-      // Ensure Google Drive files and other file embeds are preserved
-      if (block.type === 'file' || block.type === 'embed') {
-        console.log(`📎 Found ${block.type} block: ${block[block.type]?.file?.name || block[block.type]?.url || 'unnamed'}`);
-      }
-
       return cleanBlock;
     });
 
@@ -913,12 +907,6 @@ async function copyChildBlocks(sourceBlockId, destinationPageId, parentBlocks) {
       if (lastBlock.has_children || lastBlock.type === 'column_list' || lastBlock.type === 'column') {
         const childBlocksToAppend = childBlocksResponse.results.map(block => {
           const { id, created_time, last_edited_time, created_by, last_edited_by, ...cleanBlock } = block;
-
-          // Ensure Google Drive files and other file embeds are preserved in child blocks
-          if (block.type === 'file' || block.type === 'embed') {
-            console.log(`📎 Found child ${block.type} block: ${block[block.type]?.file?.name || block[block.type]?.url || 'unnamed'}`);
-          }
-
           return cleanBlock;
         });
 
@@ -1097,10 +1085,60 @@ async function copyPagesToStories(workflowPages, epicDetails, dateTranslation, w
         console.log(`Created fallback Title property: "${epicDetails.name}: Workflow Task"`);
       }
 
-      // Translate dates
-      if (newProperties.Date && newProperties.Date.date && workflowPage.date) {
-        const translatedDate = new Date(workflowPage.date.getTime() + dateTranslation.offset);
-        newProperties.Date.date.start = translatedDate.toISOString().split('T')[0];
+      // Translate dates - handle both single dates and date ranges
+      if (newProperties.Date && newProperties.Date.date) {
+        const originalDate = newProperties.Date.date;
+
+        // If we have the original workflow page date, use it for translation
+        if (workflowPage.date) {
+          const translatedDate = new Date(workflowPage.date.getTime() + dateTranslation.offset);
+
+          // Handle date ranges (both start and end dates)
+          if (originalDate.start && originalDate.end) {
+            const startDate = new Date(originalDate.start);
+            const endDate = new Date(originalDate.end);
+
+            // Validate original date range
+            if (startDate >= endDate) {
+              console.warn(`⚠️ Invalid original date range: ${originalDate.start} to ${originalDate.end}`);
+              // Skip date translation for invalid ranges
+            } else {
+              const duration = endDate.getTime() - startDate.getTime(); // Preserve the duration
+
+              newProperties.Date.date.start = translatedDate.toISOString().split('T')[0];
+              const translatedEndDate = new Date(translatedDate.getTime() + duration);
+
+              // Ensure translated end date is after translated start date
+              if (translatedEndDate <= translatedDate) {
+                console.warn(`⚠️ Translation would create invalid date range, using original dates`);
+              } else {
+                newProperties.Date.date.end = translatedEndDate.toISOString().split('T')[0];
+                console.log(`📅 Translated date range: ${originalDate.start} - ${originalDate.end} → ${newProperties.Date.date.start} - ${newProperties.Date.date.end}`);
+              }
+            }
+          } else if (originalDate.start) {
+            // Single date
+            newProperties.Date.date.start = translatedDate.toISOString().split('T')[0];
+            console.log(`📅 Translated date: ${originalDate.start} → ${newProperties.Date.date.start}`);
+          }
+        } else {
+          // No translation needed, but ensure dates are valid
+          if (originalDate.start && originalDate.end) {
+            const startDate = new Date(originalDate.start);
+            const endDate = new Date(originalDate.end);
+
+            // Check if the date range is valid
+            if (startDate >= endDate) {
+              console.warn(`⚠️ Invalid date range detected: ${originalDate.start} to ${originalDate.end}`);
+              // For invalid ranges, we can either skip the date or keep original
+              // Let's skip the date property entirely to avoid API errors
+              if (isTargetDatePage) {
+                console.warn(`🎯 Target date page: removing invalid date property to prevent API error`);
+                delete newProperties.Date;
+              }
+            }
+          }
+        }
       }
 
       // Add relation to epic(s) - use all epics for target date page
@@ -1161,6 +1199,46 @@ async function copyPagesToStories(workflowPages, epicDetails, dateTranslation, w
       }
     } catch (error) {
       console.error(`Error copying page ${workflowPage.id}:`, error);
+
+      // Special handling for target date page errors
+      if (isTargetDatePage) {
+        console.error(`❌ CRITICAL: Target date page failed to copy:`, {
+          pageId: workflowPage.id,
+          pageName: workflowPage.properties?.Name?.title?.[0]?.plain_text || 'Unknown',
+          error: error.message,
+          properties: Object.keys(workflowPage.properties || {})
+        });
+
+        // Try to copy target date page without date property if it's causing validation errors
+        if (error.message && error.message.includes('date range')) {
+          console.log(`🎯 Attempting to copy target date page without date property...`);
+          try {
+            const retryProperties = { ...newProperties };
+            delete retryProperties.Date; // Remove the problematic date property
+
+            const retryPageParams = {
+              parent: { database_id: STORIES_DB_ID },
+              properties: retryProperties,
+            };
+
+            if (workflowPage.icon) {
+              retryPageParams.icon = workflowPage.icon;
+            }
+
+            const retryNewPage = await notion.pages.create(retryPageParams);
+            console.log(`✅ Target date page copied successfully without date property: ${retryNewPage.id}`);
+
+            copiedPages.push(retryNewPage);
+            templateToPageMap[originalTitle] = retryNewPage.id;
+            targetDatePageCopied = true;
+
+            return; // Successfully copied, exit the catch block
+          } catch (retryError) {
+            console.error(`❌ Retry also failed:`, retryError.message);
+          }
+        }
+      }
+
       // Continue with other pages even if one fails
     }
   }
