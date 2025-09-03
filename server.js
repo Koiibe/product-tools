@@ -320,10 +320,17 @@ async function processWorkflowCopy(epicId, webhookTargetDate = null, workflowTyp
     const dateTranslation = calculateDateTranslation(workflowPages, effectiveTargetDate);
 
     // Step 4: Copy pages to Stories database
-    const copiedPages = await copyPagesToStories(workflowPages, epicDetails, dateTranslation);
+    const copyResult = await copyPagesToStories(workflowPages, epicDetails, dateTranslation);
 
-    console.log(`Successfully copied ${copiedPages.length} pages to Stories database`);
-    return copiedPages;
+    console.log(`Successfully copied ${copyResult.copiedPages.length} pages to Stories database`);
+
+    // Step 5: Resolve dependencies in second pass
+    if (copyResult.templateToPageMap && Object.keys(copyResult.templateToPageMap).length > 0) {
+      console.log(`🔗 Resolving dependencies for ${Object.keys(copyResult.templateToPageMap).length} pages`);
+      await resolveDependencies(copyResult.templateToPageMap, workflowPages, workflowType);
+    }
+
+    return copyResult.copiedPages.length;
   } catch (error) {
     console.error('Error in processWorkflowCopy:', error);
     throw error;
@@ -514,6 +521,127 @@ async function processMultipleWorkflows(workflowConfigs, targetDate) {
   return results;
 }
 
+// Resolve dependencies by updating blocking/blocked by properties with correct page IDs
+async function resolveDependencies(templateToPageMap, workflowPages, workflowType) {
+  console.log(`🔗 Starting dependency resolution for workflow: ${workflowType}`);
+
+  for (const workflowPage of workflowPages) {
+    try {
+      // Get the original template page to check for dependency properties
+      const originalPage = await notion.pages.retrieve({ page_id: workflowPage.id });
+
+      // Check for dependency properties
+      const blockingProps = ['Blocking', 'Blocks', 'Blocking by'];
+      const blockedByProps = ['Blocked by', 'Blocked', 'Blocked_by'];
+
+      let blockingRelations = [];
+      let blockedByRelations = [];
+
+      // Extract blocking dependencies
+      for (const propName of blockingProps) {
+        const prop = originalPage.properties[propName];
+        if (prop?.relation && prop.relation.length > 0) {
+          console.log(`🔗 Found blocking property "${propName}" with ${prop.relation.length} relations`);
+          blockingRelations = blockingRelations.concat(prop.relation);
+        }
+      }
+
+      // Extract blocked by dependencies
+      for (const propName of blockedByProps) {
+        const prop = originalPage.properties[propName];
+        if (prop?.relation && prop.relation.length > 0) {
+          console.log(`🔗 Found blocked by property "${propName}" with ${prop.relation.length} relations`);
+          blockedByRelations = blockedByRelations.concat(prop.relation);
+        }
+      }
+
+      // If no dependencies found, skip this page
+      if (blockingRelations.length === 0 && blockedByRelations.length === 0) {
+        continue;
+      }
+
+      // Get the new page ID for this template
+      const templateName = workflowPage.properties.Name?.title?.[0]?.plain_text ||
+                          workflowPage.properties.Name?.rich_text?.[0]?.plain_text ||
+                          workflowPage.properties.Title?.title?.[0]?.plain_text;
+
+      if (!templateName || !templateToPageMap[templateName]) {
+        console.log(`⚠️ Could not find mapping for template: ${templateName}`);
+        continue;
+      }
+
+      const newPageId = templateToPageMap[templateName];
+
+      // Prepare updates for blocking and blocked by properties
+      const updates = {};
+
+      // Resolve blocking relations (this page blocks other pages)
+      if (blockingRelations.length > 0) {
+        const resolvedBlockingIds = [];
+
+        for (const relation of blockingRelations) {
+          // Try to find the related page in our template mapping
+          const relatedPage = await notion.pages.retrieve({ page_id: relation.id });
+          const relatedName = relatedPage.properties.Name?.title?.[0]?.plain_text ||
+                             relatedPage.properties.Name?.rich_text?.[0]?.plain_text ||
+                             relatedPage.properties.Title?.title?.[0]?.plain_text;
+
+          if (relatedName && templateToPageMap[relatedName]) {
+            resolvedBlockingIds.push({ id: templateToPageMap[relatedName] });
+            console.log(`🔗 Resolved blocking: ${templateName} → ${relatedName}`);
+          } else {
+            console.log(`⚠️ Could not resolve blocking relation for: ${relatedName || relation.id}`);
+          }
+        }
+
+        if (resolvedBlockingIds.length > 0) {
+          updates.Blocking = { relation: resolvedBlockingIds };
+        }
+      }
+
+      // Resolve blocked by relations (other pages block this page)
+      if (blockedByRelations.length > 0) {
+        const resolvedBlockedByIds = [];
+
+        for (const relation of blockedByRelations) {
+          // Try to find the related page in our template mapping
+          const relatedPage = await notion.pages.retrieve({ page_id: relation.id });
+          const relatedName = relatedPage.properties.Name?.title?.[0]?.plain_text ||
+                             relatedPage.properties.Name?.rich_text?.[0]?.plain_text ||
+                             relatedPage.properties.Title?.title?.[0]?.plain_text;
+
+          if (relatedName && templateToPageMap[relatedName]) {
+            resolvedBlockedByIds.push({ id: templateToPageMap[relatedName] });
+            console.log(`🔗 Resolved blocked by: ${relatedName} → ${templateName}`);
+          } else {
+            console.log(`⚠️ Could not resolve blocked by relation for: ${relatedName || relation.id}`);
+          }
+        }
+
+        if (resolvedBlockedByIds.length > 0) {
+          updates['Blocked by'] = { relation: resolvedBlockedByIds };
+        }
+      }
+
+      // Update the page with resolved dependencies
+      if (Object.keys(updates).length > 0) {
+        console.log(`🔄 Updating dependencies for page ${newPageId}`);
+        await notion.pages.update({
+          page_id: newPageId,
+          properties: updates
+        });
+        console.log(`✅ Updated dependencies for: ${templateName}`);
+      }
+
+    } catch (error) {
+      console.error(`❌ Error resolving dependencies for page ${workflowPage.id}:`, error.message);
+      // Continue with other pages even if one fails
+    }
+  }
+
+  console.log(`🔗 Completed dependency resolution for workflow: ${workflowType}`);
+}
+
 // Calculate date translation to maintain relational distance
 function calculateDateTranslation(workflowPages, epicFulfillBy) {
   if (!epicFulfillBy || workflowPages.length === 0) {
@@ -594,7 +722,8 @@ function cleanPropertiesForAPI(properties, allowedProperties = []) {
 // Copy pages to Stories database with translations
 async function copyPagesToStories(workflowPages, epicDetails, dateTranslation) {
   const copiedPages = [];
-  
+  const templateToPageMap = {}; // Map template page names to new page IDs
+
   // Get Stories database schema to know which properties are allowed
   console.log('Getting Stories database schema...');
   const storiesSchema = await getDatabaseSchema(STORIES_DB_ID);
@@ -696,13 +825,22 @@ async function copyPagesToStories(workflowPages, epicDetails, dateTranslation) {
 
       copiedPages.push(newPage);
       console.log(`Created page: ${newPage.id}`);
+
+      // Track the mapping from template page name to new page ID for dependency resolution
+      if (originalTitle) {
+        templateToPageMap[originalTitle] = newPage.id;
+        console.log(`📋 Mapped template "${originalTitle}" → page ${newPage.id}`);
+      }
     } catch (error) {
       console.error(`Error copying page ${workflowPage.id}:`, error);
       // Continue with other pages even if one fails
     }
   }
 
-  return copiedPages;
+  return {
+    copiedPages,
+    templateToPageMap
+  };
 }
 
 // Start server
