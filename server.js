@@ -447,12 +447,12 @@ async function getWorkflowPages(workflowType = null) {
       ],
     };
 
-    // If workflow type is specified, filter by workflow select property (not relation)
+    // If workflow type is specified, filter by workflow multi_select property (not relation)
     if (workflowType) {
       queryParams.filter = {
         property: 'Workflow',
-        select: {
-          equals: workflowType
+        multi_select: {
+          contains: workflowType
         }
       };
       console.log(`🔄 Filtering workflow pages by workflow type: ${workflowType}`);
