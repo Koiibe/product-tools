@@ -21,6 +21,20 @@ const notion = new Client({
 const PRODUCT_WORKFLOWS_DB_ID = '263ce8f7317a804dad72cac4e8a5aa60';
 const STORIES_DB_ID = '1c1ce8f7317a80dfafc4d95c8cb67c3e';
 
+// Store recent debug messages
+let debugMessages = [];
+const MAX_DEBUG_MESSAGES = 50;
+
+function addDebugMessage(message) {
+  debugMessages.push({
+    timestamp: new Date().toISOString(),
+    message: message
+  });
+  if (debugMessages.length > MAX_DEBUG_MESSAGES) {
+    debugMessages.shift();
+  }
+}
+
 // Webhook endpoint for Notion button
 app.post('/webhook/notion', async (req, res) => {
   try {
@@ -74,6 +88,16 @@ app.post('/webhook/notion', async (req, res) => {
 // Health check endpoint
 app.get('/health', (req, res) => {
   res.status(200).json({ status: 'OK', message: 'Server is running' });
+});
+
+// Debug endpoint to see recent logs
+app.get('/debug', (req, res) => {
+  res.json({
+    message: 'Recent debug messages',
+    timestamp: new Date().toISOString(),
+    apiKey: process.env.NOTION_API_TOKEN || process.env.NOTION_API_KEY ? 'Set' : 'Missing',
+    recentMessages: debugMessages.slice(-10) // Show last 10 messages
+  });
 });
 
 // Main processing function
@@ -231,19 +255,24 @@ async function copyPagesToStories(workflowPages, epicDetails, dateTranslation) {
       let originalTitle = '';
 
       // Debug: Log what properties are available
-      console.log(`Page properties for ${workflowPage.id}:`, Object.keys(workflowPage.properties));
+      const pageProps = Object.keys(workflowPage.properties);
+      addDebugMessage(`Page ${workflowPage.id} properties: [${pageProps.join(', ')}]`);
+      console.log(`Page properties for ${workflowPage.id}:`, pageProps);
 
       if (newProperties.Name && newProperties.Name.title) {
         originalTitle = newProperties.Name.title[0]?.plain_text || '';
+        addDebugMessage(`Found Name property with title: "${originalTitle}"`);
         console.log(`Found Name property with title: "${originalTitle}"`);
         // Remove the Name property since target doesn't have it
         delete newProperties.Name;
       } else if (newProperties.Name && newProperties.Name.rich_text) {
         // Try rich_text format
         originalTitle = newProperties.Name.rich_text[0]?.plain_text || '';
+        addDebugMessage(`Found Name property with rich_text: "${originalTitle}"`);
         console.log(`Found Name property with rich_text: "${originalTitle}"`);
         delete newProperties.Name;
       } else {
+        addDebugMessage(`No Name property found or unexpected format: ${JSON.stringify(newProperties.Name)}`);
         console.log('No Name property found or it has unexpected format:', newProperties.Name);
       }
 
@@ -255,6 +284,7 @@ async function copyPagesToStories(workflowPages, epicDetails, dateTranslation) {
             type: 'text'
           }]
         };
+        addDebugMessage(`Created Title property: "${epicDetails.name}: ${originalTitle}"`);
         console.log(`Created Title property: "${epicDetails.name}: ${originalTitle}"`);
       } else {
         // Fallback: create a generic title if no name was found
@@ -264,6 +294,7 @@ async function copyPagesToStories(workflowPages, epicDetails, dateTranslation) {
             type: 'text'
           }]
         };
+        addDebugMessage(`Created fallback Title property: "${epicDetails.name}: Workflow Task"`);
         console.log(`Created fallback Title property: "${epicDetails.name}: Workflow Task"`);
       }
 
