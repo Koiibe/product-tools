@@ -494,8 +494,9 @@ async function processMultipleWorkflows(workflowConfigs, targetDate) {
   }
 
   // Find reference date across all workflow pages
-  const referenceDate = findReferenceDate(allWorkflowPages);
-  const referenceDateForTranslation = referenceDate || new Date(targetDate);
+  // Priority: 1. Webhook target date, 2. Target date page, 3. Latest date
+  const referenceDate = findReferenceDate(allWorkflowPages, targetDate ? new Date(targetDate) : null);
+  const referenceDateForTranslation = referenceDate || new Date();
 
   console.log(`📅 Reference date for all workflows: ${referenceDateForTranslation.toISOString().split('T')[0]}`);
 
@@ -895,8 +896,14 @@ function calculateDateTranslation(workflowPages, referenceDate) {
 }
 
 // Find reference date across all workflow pages
-// Priority: Target date page if exists, otherwise latest date across all pages
-function findReferenceDate(allWorkflowPages) {
+// Priority: 1. Webhook target date, 2. Target date page if exists, 3. Latest date across all pages
+function findReferenceDate(allWorkflowPages, webhookTargetDate) {
+  // First priority: Use webhook target date if provided
+  if (webhookTargetDate) {
+    console.log(`📅 Using webhook target date as reference: ${webhookTargetDate.toISOString().split('T')[0]}`);
+    return webhookTargetDate;
+  }
+
   // Flatten all workflow pages into a single array
   const allPages = [];
   for (const workflowType in allWorkflowPages) {
@@ -906,10 +913,11 @@ function findReferenceDate(allWorkflowPages) {
   }
 
   if (allPages.length === 0) {
+    console.log('📅 No workflow pages found');
     return null;
   }
 
-  // First, check if there's a "Target date" page
+  // Second priority: check if there's a "Target date" page
   const targetDatePage = allPages.find(page =>
     page.properties?.Name?.title?.[0]?.plain_text?.toLowerCase().includes('target date') ||
     page.properties?.Name?.rich_text?.[0]?.plain_text?.toLowerCase().includes('target date') ||
@@ -921,7 +929,7 @@ function findReferenceDate(allWorkflowPages) {
     return targetDatePage.date;
   }
 
-  // If no target date page, find the latest date across all pages
+  // Third priority: find the latest date across all pages
   const pagesWithDates = allPages.filter(page => page.date);
   if (pagesWithDates.length === 0) {
     console.log('📅 No dates found in workflow pages');
